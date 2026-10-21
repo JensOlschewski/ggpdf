@@ -2,7 +2,8 @@
 """Open explicitly selected PDFs in a private loopback PDF.js viewer."""
 
 import argparse
-import fcntl
+from contextlib import contextmanager
+import errno
 import hashlib
 import json
 import mimetypes
@@ -20,7 +21,9 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 ROOT = Path(__file__).resolve().parent
 THEME = ROOT / "theme.css"
-CACHE = Path.home() / "Library/Caches/pdf-preview"
+WINDOWS = sys.platform == "win32"
+CACHE = (Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local")) / "ggpdf"
+         if WINDOWS else Path.home() / "Library/Caches/pdf-preview")
 PORT = 18765
 ORIGIN = "http://[::1]:{}".format(PORT)
 HTTP = build_opener(ProxyHandler({}))
@@ -42,7 +45,36 @@ CHROMIUM_BUNDLE_IDS = {
 
 def cache_directory():
     CACHE.mkdir(mode=0o700, parents=True, exist_ok=True)
-    CACHE.chmod(0o700)
+    if not WINDOWS:
+        CACHE.chmod(0o700)
+
+
+@contextmanager
+def server_lock():
+    with (CACHE / "server.lock").open("a+b") as lock:
+        if WINDOWS:
+            import msvcrt
+            lock.seek(0)
+            try:
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError as error:
+                if error.errno == errno.EACCES:
+                    yield False
+                    return
+                raise
+            try:
+                yield True
+            finally:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+                return
+            yield True
 
 
 def request(token, route, data=None):
@@ -178,10 +210,8 @@ class Handler(BaseHTTPRequestHandler):
 def serve():
     cache_directory()
     # Held for the entire process: concurrent launches cannot create two servers.
-    with (CACHE / "server.lock").open("a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+    with server_lock() as acquired:
+        if not acquired:
             return
         token_path = CACHE / "token"
         if token_path.exists():
@@ -189,7 +219,8 @@ def serve():
         else:
             token = secrets.token_urlsafe(32)
             token_path.write_text(token)
-            token_path.chmod(0o600)
+            if not WINDOWS:
+                token_path.chmod(0o600)
         with Server(("::1", PORT), Handler) as server:
             server.token = token
             server.documents = {}
@@ -214,9 +245,10 @@ def ensure_server():
     if token:
         return token
     with (CACHE / "server.log").open("ab") as log:
+        flags = subprocess.CREATE_NO_WINDOW if WINDOWS else 0
         subprocess.Popen([sys.executable, str(ROOT / "preview.py"), "--serve"],
-                         stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                         start_new_session=True)
+                          stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                          start_new_session=not WINDOWS, creationflags=flags)
     for _ in range(50):
         time.sleep(0.1)
         token = running()
@@ -238,6 +270,9 @@ def default_browser_bundle_id():
 
 
 def open_browser(url):
+    if WINDOWS:
+        os.startfile(url)
+        return
     try:
         bundle_id = default_browser_bundle_id()
     except (subprocess.CalledProcessError, OSError):
@@ -251,7 +286,7 @@ def open_browser(url):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--print-url", action="store_true", help="Print the viewer URL instead of opening Chrome")
+    parser.add_argument("--print-url", action="store_true", help="Print the viewer URL instead of opening a browser")
     parser.add_argument("files", nargs="*", type=Path)
     args = parser.parse_args()
     if args.serve:
@@ -262,6 +297,8 @@ def main():
     token = ensure_server()
     for path in args.files:
         result = request(token, "/open", {"path": str(path.resolve(strict=True))})
+        if "error" in result:
+            raise ValueError(result["error"])
         if args.print_url:
             print(result["url"])
         else:
@@ -272,5 +309,10 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        print("PDF Preview: " + str(error), file=sys.stderr)
+        message = "PDF Preview: " + str(error)
+        if WINDOWS and not any(arg == "--serve" for arg in sys.argv[1:]) and sys.executable.lower().endswith("pythonw.exe"):
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, message, "ggpdf", 0x10)
+        else:
+            print(message, file=sys.stderr)
         sys.exit(1)

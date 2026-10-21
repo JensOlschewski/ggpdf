@@ -5,6 +5,8 @@ text selection.
 
 ## Install & use
 
+### macOS
+
 ```sh
 git clone https://github.com/JensOlschewski/ggpdf
 cd ggpdf
@@ -19,6 +21,22 @@ python3 preview.py document.pdf
 ```
 
 See [Open](#open) for details on what the installer does.
+
+### Windows (PowerShell)
+
+Install Python 3, then in PowerShell run:
+
+```powershell
+git clone https://github.com/JensOlschewski/ggpdf
+cd ggpdf
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+Right-click a PDF and select **Open with → Choose another app → ggpdf PDF Preview**.
+The installer registers an option for the current user; it does not change the
+default PDF app. Keep the cloned folder in place after installation. Without
+installing, open a PDF from PowerShell with `py -3 .\preview.py .\document.pdf`
+(or `python .\preview.py .\document.pdf` if `py` is unavailable).
 
 ## Keys
 
@@ -54,16 +72,17 @@ From a clone of this repository, run:
 python3 preview.py document.pdf
 ```
 
-Optionally run `./install.sh` to install a macOS file-opening adapter at
+On macOS, optionally run `./install.sh` to install a file-opening adapter at
 `~/Applications/PDF Preview.app`. The installer refuses to overwrite an existing
 app. Open the app directly to choose PDFs from a file picker, or register it as
 the default PDF handler in macOS settings. Its source is `launcher.applescript`.
-PDFs open in the system's default browser. If it's Chromium-based (Chrome,
+PDFs open in the system's default browser. On macOS, if it's Chromium-based (Chrome,
 Edge, Brave, Vivaldi, Chromium, Opera, Arc), they open as a standalone app
 window without the tab strip or address bar; other browsers (Safari, Firefox)
-open a normal window. The viewer is document-only: no PDF toolbar, reserved
-header space, or page borders/shadows. Use Cmd+f for search; its panel appears
-only while searching.
+open a normal window. On Windows, the viewer opens in the default browser.
+The viewer is document-only: no PDF toolbar, reserved header space, or page
+borders/shadows. Use Cmd+f (macOS) or Ctrl+f (Windows) for search; its panel
+appears only while searching.
 
 ## Appearance
 
@@ -87,7 +106,8 @@ explicitly opened PDFs and viewer assets are exposed. There is no directory
 browsing or arbitrary-file endpoint. The server stays running for tab reloads
 and subsequent documents. After a reboot, opening a PDF starts it again.
 
-Runtime state and logs: `~/Library/Caches/pdf-preview/`. To stop the server:
+Runtime state and logs: `~/Library/Caches/pdf-preview/` on macOS and
+`%LOCALAPPDATA%\ggpdf\` on Windows. To stop the server on macOS:
 
 ```sh
 kill "$(cat ~/Library/Caches/pdf-preview/server.pid)"
