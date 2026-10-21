@@ -25,6 +25,20 @@ PORT = 18765
 ORIGIN = "http://[::1]:{}".format(PORT)
 HTTP = build_opener(ProxyHandler({}))
 
+# Browsers whose --app=URL flag opens a window without a tab strip or address
+# bar. Safari and Firefox have no equivalent, so they fall back to a normal
+# window via the default handler.
+CHROMIUM_BUNDLE_IDS = {
+    "com.google.Chrome",
+    "com.google.Chrome.beta",
+    "com.microsoft.edgemac",
+    "com.brave.Browser",
+    "com.vivaldi.Vivaldi",
+    "org.chromium.Chromium",
+    "com.operasoftware.Opera",
+    "company.thebrowser.Browser",
+}
+
 
 def cache_directory():
     CACHE.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -211,6 +225,29 @@ def ensure_server():
     raise RuntimeError("PDF Preview could not start. See " + str(CACHE / "server.log"))
 
 
+def default_browser_bundle_id():
+    script = (
+        'ObjC.import("AppKit");'
+        'var url = $.NSWorkspace.sharedWorkspace.URLForApplicationToOpenURL('
+        '$.NSURL.URLWithString("http://example.com"));'
+        '$.NSBundle.bundleWithURL(url).bundleIdentifier.js'
+    )
+    result = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", script],
+                             capture_output=True, text=True, check=True)
+    return result.stdout.strip()
+
+
+def open_browser(url):
+    try:
+        bundle_id = default_browser_bundle_id()
+    except (subprocess.CalledProcessError, OSError):
+        bundle_id = None
+    if bundle_id in CHROMIUM_BUNDLE_IDS:
+        subprocess.run(["/usr/bin/open", "-n", "-b", bundle_id, "--args", "--app=" + url], check=True)
+    else:
+        subprocess.run(["/usr/bin/open", url], check=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
@@ -228,10 +265,7 @@ def main():
         if args.print_url:
             print(result["url"])
         else:
-            subprocess.run([
-                "/usr/bin/open", "-na", "Google Chrome", "--args",
-                "--app=" + result["url"],
-            ], check=True)
+            open_browser(result["url"])
 
 
 if __name__ == "__main__":
