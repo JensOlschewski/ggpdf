@@ -82,7 +82,8 @@ the default PDF handler in macOS settings. Its source is `launcher.applescript`.
 PDFs open in the system's default browser. On macOS, if it's Chromium-based (Chrome,
 Edge, Brave, Vivaldi, Chromium, Opera, Arc), they open as a standalone app
 window without the tab strip or address bar; other browsers (Safari, Firefox)
-open a normal window. On Windows, the viewer opens in the default browser.
+open a normal window. On Windows, Chromium-based default browsers open an app
+window; other default browsers open the viewer normally.
 The viewer is document-only: no PDF toolbar, reserved header space, or page
 borders/shadows. Use Cmd+f (macOS) or Ctrl+f (Windows) for search; its panel
 appears only while searching.

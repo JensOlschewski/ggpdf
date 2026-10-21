@@ -7,6 +7,7 @@ import errno
 import hashlib
 import json
 import mimetypes
+import ntpath
 import os
 from pathlib import Path
 import secrets
@@ -40,6 +41,10 @@ CHROMIUM_BUNDLE_IDS = {
     "org.chromium.Chromium",
     "com.operasoftware.Opera",
     "company.thebrowser.Browser",
+}
+CHROMIUM_WINDOWS_EXES = {
+    "chrome.exe", "msedge.exe", "brave.exe", "vivaldi.exe",
+    "chromium.exe", "opera.exe",
 }
 
 
@@ -269,8 +274,33 @@ def default_browser_bundle_id():
     return result.stdout.strip()
 
 
+def default_windows_browser():
+    import ctypes
+    from ctypes import wintypes
+
+    query = ctypes.windll.shlwapi.AssocQueryStringW
+    query.argtypes = (wintypes.DWORD, wintypes.DWORD, wintypes.LPCWSTR,
+                      wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD))
+    query.restype = wintypes.LONG
+    size = wintypes.DWORD()
+    # ASSOCSTR_EXECUTABLE for the default HTTP handler.
+    if query(0, 2, "http", "open", None, ctypes.byref(size)) != 1 or not size.value:
+        return None
+    result = ctypes.create_unicode_buffer(size.value)
+    if query(0, 2, "http", "open", result, ctypes.byref(size)) != 0:
+        return None
+    return result.value
+
+
 def open_browser(url):
     if WINDOWS:
+        browser = default_windows_browser()
+        if browser and ntpath.basename(browser).lower() in CHROMIUM_WINDOWS_EXES:
+            try:
+                subprocess.Popen([browser, "--app=" + url])
+                return
+            except OSError:
+                pass
         os.startfile(url)
         return
     try:
