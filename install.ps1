@@ -1,91 +1,168 @@
-# Register ggpdf in the current user's PDF "Open with" menu; keep the default app.
+# Register ggpdf in the current user's PDF "Open with" menu.
+# Keep the current default PDF application.
 $ErrorActionPreference = 'Stop'
 
-if (-not $IsWindows -and $PSVersionTable.PSEdition -eq 'Core') {
-    throw 'Run this installer in PowerShell on Windows.'
+if ($env:OS -ne 'Windows_NT') {
+    throw 'Run this installer on Windows.'
 }
 
-$scriptPath = (Resolve-Path (Join-Path $PSScriptRoot 'preview.py')).Path
+$scriptPath = (Resolve-Path -LiteralPath (
+    Join-Path $PSScriptRoot 'preview.py'
+)).Path
+
+# Find a working Python 3 installation.
 $python = $null
-foreach ($command in @('py', 'python')) {
-    if (-not (Get-Command $command -ErrorAction SilentlyContinue)) { continue }
+
+foreach ($name in @('py', 'python', 'python3')) {
+    $cmd = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $cmd) { continue }
+
     try {
-        $arguments = @()
-        if ($command -eq 'py') { $arguments = @('-3') }
-        $python = (& $command @arguments -c 'import sys; print(sys.executable)' 2>$null | Select-Object -First 1)
-        if ($LASTEXITCODE -eq 0 -and $python -and (Test-Path -LiteralPath $python -PathType Leaf)) { break }
+        $pythonArgs = @(
+            '-c'
+            'import sys; print(sys.executable); sys.exit(0 if sys.version_info.major == 3 else 1)'
+        )
+
+        if ($name -eq 'py') {
+            $pythonArgs = @('-3') + $pythonArgs
+        }
+
+        $output = & $cmd.Source @pythonArgs
+        $exitCode = $LASTEXITCODE
+
+        if ($exitCode -ne 0) {
+            Write-Warning "$name exited with code $exitCode."
+            continue
+        }
+
+        $candidate = $output | Select-Object -Last 1
+        if ($candidate) {
+            $candidate = $candidate.ToString().Trim()
+
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                $python = $candidate
+                break
+            }
+        }
+
+        Write-Warning "$name returned an invalid executable path: '$candidate'"
     } catch {
-        Write-Warning "Python detection failed for ${command}: $_"
+        Write-Warning "Python detection failed for ${name}: $_"
     }
-    $python = $null
-}
-if (-not $python) { throw 'Python 3 is required. Install Python 3, then rerun this script.' }
-
-$pythonw = Join-Path (Split-Path $python) 'pythonw.exe'
-if (Test-Path -LiteralPath $pythonw -PathType Leaf) { $python = $pythonw }
-
-# Create a small ggpdf icon for the file association and app picker.
-Add-Type -AssemblyName System.Drawing
-$iconPath = Join-Path $PSScriptRoot 'ggpdf.ico'
-$bitmap = [System.Drawing.Bitmap]::new(64, 64)
-$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-$graphics.SmoothingMode = 'AntiAlias'
-$graphics.TextRenderingHint = 'AntiAliasGridFit'
-$background = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(40, 40, 40))
-$foreground = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::White)
-$font = [System.Drawing.Font]::new('Arial', 27, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
-try {
-    $graphics.FillRectangle($background, 0, 0, 64, 64)
-    $graphics.DrawString('gg', $font, $foreground, 7, 12)
-    $icon = [System.Drawing.Icon]::FromHandle($bitmap.GetHicon())
-    try {
-        $stream = [System.IO.File]::Create($iconPath)
-        try { $icon.Save($stream) } finally { $stream.Dispose() }
-    } finally { $icon.Dispose() }
-} finally {
-    $font.Dispose()
-    $foreground.Dispose()
-    $background.Dispose()
-    $graphics.Dispose()
-    $bitmap.Dispose()
 }
 
-$classes = 'Registry::HKEY_CURRENT_USER\Software\Classes'
+if (-not $python) {
+    throw 'No working Python 3 installation found. See warnings above.'
+}
+
+Write-Host "Found Python: $python"
+
+# Prefer pythonw to avoid opening a console when launching PDFs.
+$pythonw = Join-Path (Split-Path -Parent $python) 'pythonw.exe'
+if (Test-Path -LiteralPath $pythonw -PathType Leaf) {
+    $python = $pythonw
+}
+
+$openCommand = '"{0}" "{1}" "%1"' -f $python, $scriptPath
+$classesRoot = 'HKCU:\Software\Classes'
 $progId = 'ggpdf.PDF'
-$appKey = Join-Path $classes $progId
-$commandKey = Join-Path $appKey 'shell\open\command'
-$openWithKey = Join-Path $classes '.pdf\OpenWithProgids'
-$capabilities = 'Registry::HKEY_CURRENT_USER\Software\ggpdf\Capabilities'
-$registered = 'Registry::HKEY_CURRENT_USER\Software\RegisteredApplications'
 
-New-Item -Path $commandKey -Force | Out-Null
-Set-Item -Path $appKey -Value 'ggpdf PDF Preview'
-New-ItemProperty -Path $appKey -Name FriendlyTypeName -Value 'ggpdf PDF Preview' -Force | Out-Null
-$iconKey = New-Item -Path (Join-Path $appKey 'DefaultIcon') -Force
-Set-Item -Path $iconKey.PSPath -Value ('"{0}"' -f $iconPath)
-Set-Item -Path $commandKey -Value ('"{0}" "{1}" "%1"' -f $python, $scriptPath)
-New-Item -Path $openWithKey -Force | Out-Null
-New-ItemProperty -Path $openWithKey -Name $progId -PropertyType String -Value '' -Force | Out-Null
+function Set-RegistryDefault {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
 
-New-Item -Path $capabilities -Force | Out-Null
-New-ItemProperty -Path $capabilities -Name ApplicationName -Value 'ggpdf PDF Preview' -Force | Out-Null
-New-ItemProperty -Path $capabilities -Name ApplicationDescription -Value 'Keyboard-driven PDF viewer' -Force | Out-Null
-New-ItemProperty -Path $capabilities -Name ApplicationIcon -Value ('"{0}"' -f $iconPath) -Force | Out-Null
-$associations = New-Item -Path (Join-Path $capabilities 'FileAssociations') -Force
-New-ItemProperty -Path $associations.PSPath -Name '.pdf' -Value $progId -Force | Out-Null
-New-Item -Path $registered -Force | Out-Null
-New-ItemProperty -Path $registered -Name 'ggpdf PDF Preview' -Value 'Software\ggpdf\Capabilities' -Force | Out-Null
+        [Parameter(Mandatory)]
+        [string]$Value
+    )
 
-if (-not ('ShellRegistration' -as [type])) {
+    New-Item -Path $Path -Force | Out-Null
+    Set-Item -LiteralPath $Path -Value $Value
+}
+
+# Register the ggpdf file type.
+$progIdPath = Join-Path $classesRoot $progId
+Set-RegistryDefault -Path $progIdPath -Value 'ggpdf PDF preview'
+Set-RegistryDefault -Path "$progIdPath\DefaultIcon" -Value (
+    '"{0}",0' -f $python
+)
+Set-RegistryDefault -Path "$progIdPath\shell\open\command" -Value $openCommand
+
+# Add ggpdf to the PDF "Open with" list without changing the default app.
+$openWithPath = "$classesRoot\.pdf\OpenWithProgids"
+New-Item -Path $openWithPath -Force | Out-Null
+New-ItemProperty `
+    -Path $openWithPath `
+    -Name $progId `
+    -PropertyType String `
+    -Value '' `
+    -Force | Out-Null
+
+# Register application capabilities for Windows' app picker.
+$capabilitiesPath = 'HKCU:\Software\ggpdf\Capabilities'
+New-Item -Path $capabilitiesPath -Force | Out-Null
+
+New-ItemProperty `
+    -Path $capabilitiesPath `
+    -Name 'ApplicationName' `
+    -PropertyType String `
+    -Value 'ggpdf' `
+    -Force | Out-Null
+
+New-ItemProperty `
+    -Path $capabilitiesPath `
+    -Name 'ApplicationDescription' `
+    -PropertyType String `
+    -Value 'PDF preview with ggpdf' `
+    -Force | Out-Null
+
+$associationsPath = "$capabilitiesPath\FileAssociations"
+New-Item -Path $associationsPath -Force | Out-Null
+New-ItemProperty `
+    -Path $associationsPath `
+    -Name '.pdf' `
+    -PropertyType String `
+    -Value $progId `
+    -Force | Out-Null
+
+$registeredAppsPath = 'HKCU:\Software\RegisteredApplications'
+New-Item -Path $registeredAppsPath -Force | Out-Null
+New-ItemProperty `
+    -Path $registeredAppsPath `
+    -Name 'ggpdf' `
+    -PropertyType String `
+    -Value 'Software\ggpdf\Capabilities' `
+    -Force | Out-Null
+
+# Notify Explorer that file associations have changed.
+if (-not ('Ggpdf.ShellNotifications' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
-public static class ShellRegistration {
-    [DllImport("shell32.dll")]
-    public static extern void SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2);
+
+namespace Ggpdf
+{
+    public static class ShellNotifications
+    {
+        [DllImport("shell32.dll")]
+        public static extern void SHChangeNotify(
+            uint eventId,
+            uint flags,
+            IntPtr item1,
+            IntPtr item2
+        );
+    }
 }
 '@
 }
-[ShellRegistration]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
 
-Write-Host 'Registered ggpdf for PDFs. Right-click a PDF > Open with > Choose another app > ggpdf PDF Preview.'
+[Ggpdf.ShellNotifications]::SHChangeNotify(
+    0x08000000,
+    0,
+    [IntPtr]::Zero,
+    [IntPtr]::Zero
+)
+
+Write-Host 'ggpdf registered successfully.'
+Write-Host 'Right-click a PDF and select Open with > ggpdf.'
+Write-Host 'Your default PDF application has not been changed.'
