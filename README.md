@@ -6,7 +6,7 @@ text selection.
 ## Install & use
 
 ```sh
-git clone <this-repo-url>
+git clone https://github.com/JensOlschewski/ggpdf
 cd ggpdf
 ./install.sh
 ```
