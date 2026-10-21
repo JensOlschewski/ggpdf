@@ -14,7 +14,9 @@ foreach ($command in @('py', 'python')) {
         if ($command -eq 'py') { $arguments = @('-3') }
         $python = (& $command @arguments -c 'import sys; print(sys.executable)' 2>$null | Select-Object -First 1)
         if ($LASTEXITCODE -eq 0 -and $python -and (Test-Path -LiteralPath $python -PathType Leaf)) { break }
-    } catch { }
+    } catch {
+        Write-Warning "Python detection failed for ${command}: $_"
+    }
     $python = $null
 }
 if (-not $python) { throw 'Python 3 is required. Install Python 3, then rerun this script.' }
