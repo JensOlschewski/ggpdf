@@ -34,7 +34,10 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 Right-click a PDF and select **Open with → Choose another app → ggpdf PDF Preview**.
 The installer registers an option for the current user; it does not change the
-default PDF app. Keep the cloned folder in place after installation. Without
+default PDF app. Re-run the installer to update an existing registration.
+If Windows previously made Python the default for PDFs, choose ggpdf in the
+**Open with** dialog and select **Always** to replace that choice.
+Keep the cloned folder in place after installation. Without
 installing, open a PDF from PowerShell with `py -3 .\preview.py .\document.pdf`
 (or `python .\preview.py .\document.pdf` if `py` is unavailable).
 
