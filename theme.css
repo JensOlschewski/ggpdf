@@ -1,0 +1,5 @@
+:root {
+    --preview-canvas-light: #ededed;
+    --preview-canvas-dark: #282828;
+    --preview-dark-page-filter: invert(0.9) hue-rotate(180deg);
+}

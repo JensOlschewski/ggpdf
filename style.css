@@ -1,0 +1,123 @@
+:root {
+    --body-bg-color: var(--preview-canvas-light);
+    --page-border: 0;
+    --page-margin: 0 auto 12px;
+}
+
+html[data-pdf-dark="true"] {
+    --body-bg-color: var(--preview-canvas-dark);
+}
+
+/* Keep PDF.js controls available to keyboard commands without visible chrome.
+   Visibility lets the nested search panel remain usable when Cmd+f opens it. */
+#mainContainer > .toolbar {
+    visibility: hidden;
+}
+
+#findbar {
+    visibility: visible;
+    position: fixed;
+    inset: 8px auto auto 8px;
+}
+
+#viewerContainer {
+    inset: 0;
+    scroll-behavior: auto !important;
+}
+
+.pdfViewer {
+    padding-block: 0;
+}
+
+.pdfViewer .page {
+    box-shadow: none;
+}
+
+/* Reserve a gutter only while visual selection is active. */
+.pdfViewer.pdf-visual-mode {
+    padding-inline: 48px 8px;
+}
+
+.pdf-visual-gutter {
+    position: absolute;
+    inset: 0 calc(100% + 8px) 0 auto;
+    width: 4ch;
+    color: light-dark(#777, #aaa);
+    font: 11px ui-monospace, monospace;
+    user-select: none;
+    pointer-events: none;
+}
+
+.pdf-visual-line {
+    position: absolute;
+    inset-inline: 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-inline: 3px;
+    box-sizing: border-box;
+}
+
+.pdf-visual-line.is-current {
+    color: #d93025;
+    font-weight: bold;
+}
+
+::highlight(pdf-visual-selection) {
+    background-color: rgb(66 133 244 / 35%);
+}
+
+::highlight(pdf-visual-cursor) {
+    background-color: rgb(120 120 120 / 65%);
+}
+
+.pdfViewer.pdf-visual-marking ::highlight(pdf-visual-cursor) {
+    background-color: rgb(155 85 220 / 75%);
+}
+
+::highlight(pdf-visual-yank) {
+    background-color: rgb(255 195 55 / 65%);
+}
+
+/* Keep mode/cursor announcements accessible without an on-screen mode bar. */
+.pdf-visual-status:not(.is-notice) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+}
+
+.pdf-visual-status.is-notice {
+    position: fixed;
+    inset: auto auto 12px 12px;
+    z-index: 40000;
+    max-width: calc(100vw - 48px);
+    padding: 7px 10px;
+    border-radius: 4px;
+    background: light-dark(#fff, #333);
+    color: light-dark(#333, #eee);
+    box-shadow: 0 1px 6px rgb(0 0 0 / 20%);
+    font: 12px/1.4 ui-monospace, monospace;
+    pointer-events: none;
+}
+
+/* Filter each page separately, avoiding a document-sized compositing layer. */
+html[data-pdf-dark="true"] .pdfViewer > .page {
+    filter: var(--preview-dark-page-filter);
+}
+
+@media print {
+    .pdf-visual-gutter,
+    .pdf-visual-status {
+        display: none !important;
+    }
+
+    html[data-pdf-dark="true"] .pdfViewer > .page {
+        filter: none;
+    }
+}
