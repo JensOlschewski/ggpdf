@@ -75,12 +75,19 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'icon.ico') -Destination $iconPa
 
 $stagedLauncher = Join-Path $appDir ("ggpdf-{0}.exe" -f [guid]::NewGuid())
 try {
+    $compiler = New-Object Microsoft.CSharp.CSharpCodeProvider
     $compilerParameters = New-Object System.CodeDom.Compiler.CompilerParameters
-    $compilerParameters.CompilerOptions = '/win32icon:"{0}"' -f $iconPath
-    Add-Type -Path $sourcePath -OutputAssembly $stagedLauncher `
-        -OutputType WindowsApplication -CompilerParameters $compilerParameters
+    $compilerParameters.GenerateExecutable = $true
+    $compilerParameters.OutputAssembly = $stagedLauncher
+    $compilerParameters.CompilerOptions = '/target:winexe /win32icon:"{0}"' -f $iconPath
+    [void]$compilerParameters.ReferencedAssemblies.Add('System.dll')
+    $result = $compiler.CompileAssemblyFromFile($compilerParameters, $sourcePath)
+    if ($result.Errors.HasErrors) {
+        throw "Launcher compilation failed: $($result.Errors | Out-String)"
+    }
     Move-Item -LiteralPath $stagedLauncher -Destination $launcherPath -Force
 } finally {
+    if ($compiler) { $compiler.Dispose() }
     if (Test-Path -LiteralPath $stagedLauncher) {
         Remove-Item -LiteralPath $stagedLauncher -Force
     }
