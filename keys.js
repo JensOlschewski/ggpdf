@@ -31,6 +31,10 @@
         const stored = Number(load(ZOOM_KEY));
         options.set("disablePreferences", true);
         options.set("enableScripting", false);
+        // PDF.js waits for WebGPU device initialization before fetching the PDF.
+        options.set("enableWebGPU", false);
+        // Ignore a PDF's requested sidebar mode and any saved sidebar state.
+        options.set("sidebarViewOnLoad", 0);
         options.set("defaultUrl", "");
         options.set("defaultZoomValue", String(
             stored >= 0.5 && stored <= 3 ? stored * 100 : 100
