@@ -10,11 +10,13 @@ import mimetypes
 import ntpath
 import os
 from pathlib import Path
+import queue
 import secrets
 import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote, unquote, urlencode, urlsplit
@@ -95,6 +97,26 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
 
 
+def register(server, paths):
+    """Validate PDFs, record them, and describe them for an /open response."""
+    docs = []
+    for raw in paths:
+        path = Path(raw).resolve(strict=True)
+        if not path.is_file():
+            raise ValueError("Not a regular file")
+        with path.open("rb") as source:
+            if b"%PDF-" not in source.read(1024):
+                raise ValueError("The selected file is not a PDF")
+        identifier = hashlib.sha256(os.fsencode(path)).hexdigest()
+        server.documents[identifier] = path
+        file_url = "/{}/document/{}/{}".format(
+            server.token, identifier, quote(path.name, safe=""))
+        viewer_url = ORIGIN + "/{}/vendor/web/viewer.html?{}".format(
+            server.token, urlencode({"file": file_url}))
+        docs.append({"id": identifier, "name": path.name, "viewerUrl": viewer_url})
+    return docs
+
+
 class Handler(BaseHTTPRequestHandler):
     # No directory listing, arbitrary-path endpoint, or cross-origin access.
     def log_message(self, format, *args):
@@ -119,7 +141,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         self.send_header("Cache-Control", getattr(self, "cache_control", "no-store"))
-        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+        # viewer.html opts into same-origin framing so shell.html can host it as a pane.
+        self.send_header("Content-Security-Policy",
+                          "frame-ancestors " + getattr(self, "frame_ancestors", "'none'"))
         super().end_headers()
 
     def respond(self, data, content_type="application/json", status=200):
@@ -144,19 +168,24 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < length <= 65536:
                 raise ValueError("Invalid request size")
             data = json.loads(self.rfile.read(length))
-            path = Path(data["path"]).resolve(strict=True)
-            if not path.is_file():
-                raise ValueError("Not a regular file")
-            with path.open("rb") as source:
-                if b"%PDF-" not in source.read(1024):
-                    raise ValueError("The selected file is not a PDF")
-            identifier = hashlib.sha256(os.fsencode(path)).hexdigest()
-            self.server.documents[identifier] = path
-            file_url = "/{}/document/{}/{}".format(
-                self.server.token, identifier, quote(path.name, safe=""))
-            url = ORIGIN + "/{}/vendor/web/viewer.html?{}".format(
-                self.server.token, urlencode({"file": file_url}))
-            self.respond({"url": url})
+            paths = data["paths"]
+            if not isinstance(paths, list) or not paths:
+                raise ValueError("No files provided")
+            docs = register(self.server, paths)
+            # An already-open ggpdf window gets the documents pushed to it as new
+            # panes; otherwise they wait as "pending" for the window this request
+            # causes the caller to open.
+            with self.server.lock:
+                session = self.server.session
+                if session and session["alive"]:
+                    session["queue"].put_nowait({"type": "open", "docs": docs})
+                else:
+                    session = None
+                    self.server.pending.extend(docs)
+            if session:
+                self.respond({"attached": True})
+            else:
+                self.respond({"url": ORIGIN + "/{}/shell.html".format(self.server.token)})
         except (OSError, ValueError, KeyError, TypeError) as error:
             self.respond({"error": str(error)}, status=400)
 
@@ -170,6 +199,9 @@ class Handler(BaseHTTPRequestHandler):
         if route == "health":
             self.respond({"service": "pdf-preview"})
             return
+        if route == "events":
+            self.serve_events()
+            return
         if route.startswith("document/"):
             parts = route.split("/", 2)
             path = self.server.documents.get(parts[1])
@@ -180,7 +212,9 @@ class Handler(BaseHTTPRequestHandler):
         else:
             path = (ROOT / route).resolve()
             vendor = (ROOT / "vendor").resolve()
-            if not (vendor in path.parents or path in (ROOT / "keys.js", ROOT / "visual.js", ROOT / "style.css", THEME)):
+            if not (vendor in path.parents or path in (
+                    ROOT / "keys.js", ROOT / "visual.js", ROOT / "style.css", THEME,
+                    ROOT / "shell.html", ROOT / "shell.js", ROOT / "shell.css")):
                 self.send_error(404)
                 return
             content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
@@ -196,6 +230,8 @@ class Handler(BaseHTTPRequestHandler):
                     '<script src="../../keys.js"></script></head>')
                 # Prevent PDF-driven requests to remote hosts; assets are local.
                 html = html.replace("connect-src * blob: data:", "connect-src 'self' blob: data:")
+                # shell.html hosts this document in a same-origin pane iframe.
+                self.frame_ancestors = "'self'"
                 self.respond(html.encode(), "text/html; charset=utf-8")
                 return
             # Stream PDFs instead of retaining whole documents in server memory.
@@ -222,6 +258,44 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def serve_events(self):
+        """Hold one long-lived connection: the window that gets pushed new panes.
+
+        Becoming the session also claims any documents that were waiting for a
+        window (this connection's window is the one that request caused to open).
+        A later connection replaces the previous session outright; only one
+        window receives pushes at a time.
+        """
+        session = {"queue": queue.Queue(), "alive": True}
+        with self.server.lock:
+            previous = self.server.session
+            self.server.session = session
+            pending, self.server.pending = self.server.pending, []
+        if previous:
+            previous["alive"] = False
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        if pending:
+            session["queue"].put_nowait({"type": "open", "docs": pending})
+        try:
+            while session["alive"]:
+                try:
+                    item = session["queue"].get(timeout=15)
+                except queue.Empty:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                    continue
+                self.wfile.write(b"data: " + json.dumps(item).encode() + b"\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            session["alive"] = False
+            with self.server.lock:
+                if self.server.session is session:
+                    self.server.session = None
+
 
 def serve():
     cache_directory()
@@ -240,6 +314,9 @@ def serve():
         with Server(("::1", PORT), Handler) as server:
             server.token = token
             server.documents = {}
+            server.session = None
+            server.pending = []
+            server.lock = threading.Lock()
             (CACHE / "server.pid").write_text(str(os.getpid()))
             server.serve_forever()
 
@@ -341,14 +418,16 @@ def main():
     if not args.files:
         parser.error("Provide one or more PDF files")
     token = ensure_server()
-    for path in args.files:
-        result = request(token, "/open", {"path": str(path.resolve(strict=True))})
-        if "error" in result:
-            raise ValueError(result["error"])
-        if args.print_url:
-            print(result["url"])
-        else:
-            open_browser(result["url"])
+    paths = [str(path.resolve(strict=True)) for path in args.files]
+    result = request(token, "/open", {"paths": paths})
+    if "error" in result:
+        raise ValueError(result["error"])
+    if result.get("attached"):
+        return  # Pushed as new panes into the already-open ggpdf window.
+    if args.print_url:
+        print(result["url"])
+    else:
+        open_browser(result["url"])
 
 
 if __name__ == "__main__":

@@ -5,6 +5,11 @@
     ];
     const ZOOM_KEY = "pdf-preview-zoom";
     const THEME_KEY = "pdf-preview-dark";
+    // tmux-style leader: Ctrl+a arms a pane switch, consumed by the very next
+    // key (1-9 jumps to that pane, n/p moves next/previous), like a prefix key.
+    const LEADER_TIMEOUT = 1500;
+    let leaderArmed = false;
+    let leaderTimer = null;
     let lastGPress = 0;
     let pointer = null;
     let visual = null;
@@ -25,7 +30,16 @@
 
     setTheme(load(THEME_KEY) === "true");
 
-    document.addEventListener("webviewerloaded", () => {
+    // PDF.js dispatches this on parent.document, not its own -- harmless when
+    // this page is top-level (parent === self), but shell.html now always
+    // embeds the viewer in an iframe, so parent.document is the shell's. With
+    // multiple panes, that document is shared, so filter by detail.source
+    // (PDF.js sets it to its own window) rather than using { once: true },
+    // which would consume a sibling pane's dispatch and never fire for ours.
+    const loadedTarget = window.parent !== window ? window.parent.document : document;
+    const onWebviewerLoaded = (event) => {
+        if (event.detail?.source !== window) return;
+        loadedTarget.removeEventListener("webviewerloaded", onWebviewerLoaded);
         const app = window.PDFViewerApplication;
         const options = window.PDFViewerApplicationOptions;
         const stored = Number(load(ZOOM_KEY));
@@ -48,7 +62,8 @@
                 }
             });
         });
-    }, { once: true });
+    };
+    loadedTarget.addEventListener("webviewerloaded", onWebviewerLoaded);
 
     document.addEventListener("pointermove", (event) => {
         pointer = [event.clientX, event.clientY];
@@ -87,6 +102,31 @@
             return;
         }
 
+        if (leaderArmed) {
+            leaderArmed = false;
+            clearTimeout(leaderTimer);
+            lastGPress = 0;
+            const message = /^[1-9]$/.test(event.key) ? { action: "goto", index: Number(event.key) - 1 }
+                : event.key === "n" ? { action: "next" }
+                : event.key === "p" ? { action: "prev" } : null;
+            if (message && window.parent !== window) {
+                window.parent.postMessage({ type: "ggpdf-pane", ...message }, location.origin);
+            }
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return;
+        }
+        if (event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey &&
+            event.key.toLowerCase() === "a") {
+            leaderArmed = true;
+            clearTimeout(leaderTimer);
+            leaderTimer = setTimeout(() => { leaderArmed = false; }, LEADER_TIMEOUT);
+            lastGPress = 0;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return;
+        }
+
         const target = app.pdfViewer.container;
         if (visual?.handleKey(event)) {
             lastGPress = 0;
@@ -122,7 +162,13 @@
                     k: () => scroll(-50),
                     G: () => jump(target.scrollHeight),
                     i: () => setTheme(document.documentElement.dataset.pdfDark !== "true"),
-                    q: () => window.close(),
+                    q: () => {
+                        if (window.parent !== window) {
+                            window.parent.postMessage({ type: "ggpdf-pane", action: "close" }, location.origin);
+                        } else {
+                            window.close();
+                        }
+                    },
                 }[event.key];
             }
         }
