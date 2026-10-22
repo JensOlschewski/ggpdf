@@ -53,6 +53,7 @@ plist_set() {
 plist_set :CFBundleIdentifier string local.jens.pdf-preview
 plist_set :CFBundleName string ggpdf
 plist_set :CFBundleDisplayName string ggpdf
+plist_set :CFBundleIconFile string ggpdf.icns
 plist_set :CFBundleShortVersionString string 1.0.0
 plist_set :LSUIElement bool true
 
@@ -67,6 +68,7 @@ plist_set :LSUIElement bool true
 "$PLISTBUDDY" -c "Add :CFBundleDocumentTypes:0:CFBundleTypeExtensions array" "$PLIST"
 "$PLISTBUDDY" -c "Add :CFBundleDocumentTypes:0:CFBundleTypeExtensions:0 string pdf" "$PLIST"
 
+cp "$ROOT/icon.icns" "$TMP/ggpdf.app/Contents/Resources/ggpdf.icns"
 /usr/bin/codesign --force --sign - "$TMP/ggpdf.app"
 if [ -d "$APP" ]; then mv "$APP" "$TMP/previous.app"; fi
 mv "$TMP/ggpdf.app" "$APP"

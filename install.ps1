@@ -71,25 +71,7 @@ $launcherPath = Join-Path $appDir 'ggpdf.exe'
 $iconPath = Join-Path $appDir 'ggpdf.ico'
 $sourcePath = Join-Path $PSScriptRoot 'launcher.cs'
 
-Add-Type -AssemblyName System.Drawing
-$bitmap = [System.Drawing.Bitmap]::new(64, 64)
-$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-$font = [System.Drawing.Font]::new('Arial', 44, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
-$brush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::White)
-try {
-    $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-    $graphics.Clear([System.Drawing.Color]::FromArgb(44, 48, 64))
-    $graphics.DrawString('g', $font, $brush, 12, 3)
-    $handle = $bitmap.GetHicon()
-    $icon = [System.Drawing.Icon]::FromHandle($handle)
-    $stream = [System.IO.File]::Create($iconPath)
-    try { $icon.Save($stream) } finally { $stream.Dispose(); $icon.Dispose() }
-} finally {
-    $brush.Dispose()
-    $font.Dispose()
-    $graphics.Dispose()
-    $bitmap.Dispose()
-}
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'icon.ico') -Destination $iconPath -Force
 
 $stagedLauncher = Join-Path $appDir ("ggpdf-{0}.exe" -f [guid]::NewGuid())
 try {
