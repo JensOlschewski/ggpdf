@@ -93,10 +93,8 @@ try {
 
 $stagedLauncher = Join-Path $appDir ("ggpdf-{0}.exe" -f [guid]::NewGuid())
 try {
-    $compiler = New-Object System.CodeDom.Compiler.CompilerParameters
-    $compiler.CompilerOptions = '/win32icon:"{0}"' -f $iconPath
     Add-Type -Path $sourcePath -OutputAssembly $stagedLauncher `
-        -OutputType WindowsApplication -CompilerParameters $compiler
+        -OutputType WindowsApplication
     Move-Item -LiteralPath $stagedLauncher -Destination $launcherPath -Force
 } finally {
     if (Test-Path -LiteralPath $stagedLauncher) {
@@ -124,13 +122,13 @@ function Set-RegistryDefault {
 # Register the ggpdf file type.
 $progIdPath = Join-Path $classesRoot $progId
 Set-RegistryDefault -Path $progIdPath -Value 'ggpdf'
-Set-RegistryDefault -Path "$progIdPath\DefaultIcon" -Value ('"{0}",0' -f $launcherPath)
+Set-RegistryDefault -Path "$progIdPath\DefaultIcon" -Value $iconPath
 Set-RegistryDefault -Path "$progIdPath\shell\open\command" -Value $openCommand
 
 $applicationPath = "$classesRoot\Applications\ggpdf.exe"
 New-Item -Path $applicationPath -Force | Out-Null
 New-ItemProperty -Path $applicationPath -Name FriendlyAppName -Value 'ggpdf' -Force | Out-Null
-Set-RegistryDefault -Path "$applicationPath\DefaultIcon" -Value ('"{0}",0' -f $launcherPath)
+Set-RegistryDefault -Path "$applicationPath\DefaultIcon" -Value $iconPath
 Set-RegistryDefault -Path "$applicationPath\shell\open\command" -Value $openCommand
 New-Item -Path "$applicationPath\SupportedTypes" -Force | Out-Null
 New-ItemProperty -Path "$applicationPath\SupportedTypes" -Name '.pdf' -Value '' -Force | Out-Null
@@ -164,7 +162,7 @@ New-ItemProperty `
 New-ItemProperty `
     -Path $capabilitiesPath `
     -Name 'ApplicationIcon' `
-    -Value ('"{0}",0' -f $launcherPath) `
+    -Value $iconPath `
     -Force | Out-Null
 
 New-ItemProperty `
