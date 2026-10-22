@@ -308,7 +308,12 @@ def open_browser(url):
         browser = default_windows_browser()
         if browser and ntpath.basename(browser).lower() in CHROMIUM_WINDOWS_EXES:
             try:
-                subprocess.Popen([browser, "--app=" + url])
+                # A running Chromium instance ignores new window-state flags.
+                # A dedicated profile keeps these flags on its browser process.
+                profile = CACHE / ("browser-" + ntpath.basename(browser).lower())
+                subprocess.Popen([browser, "--user-data-dir=" + str(profile),
+                                  "--no-first-run", "--no-default-browser-check",
+                                  "--start-maximized", "--app=" + url])
                 return
             except OSError:
                 pass

@@ -45,6 +45,10 @@ Run the installer again to update ggpdf's **Open with** registration (including
 the path to this checkout). It builds a small `ggpdf.exe` launcher with its own
 name and icon in `%LOCALAPPDATA%\ggpdf\`. It does not change the default PDF
 app; keep the checkout in place after installing.
+With a Chromium-based default browser (such as Chrome or Edge), ggpdf opens
+maximized using its own browser profile in `%LOCALAPPDATA%\ggpdf\`. This profile
+does not share cookies, extensions, or browser settings with your regular browser.
+Other browsers control their own window size.
 
 ### Without installing
 
