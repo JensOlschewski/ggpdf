@@ -64,7 +64,7 @@ window.PDFPreviewVisualSelection = class {
             return true;
         }
         if (!this.active) return false;
-        if (event.key === "Escape") {
+        if (event.key === "Escape" || event.key === "c") {
             if (this.marking) this.stopMark();
             else this.exit();
             return true;

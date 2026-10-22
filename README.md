@@ -44,11 +44,11 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 Run the installer again to update ggpdf's **Open with** registration (including
 the path to this checkout). It builds a small `ggpdf.exe` launcher with its own
 name and icon in `%LOCALAPPDATA%\ggpdf\`. It does not change the default PDF
-app; keep the checkout in place after installing.
-With a Chromium-based default browser (such as Chrome or Edge), ggpdf opens
-maximized using its own browser profile in `%LOCALAPPDATA%\ggpdf\`. This profile
-does not share cookies, extensions, or browser settings with your regular browser.
-Other browsers control their own window size.
+app; keep the checkout in place after installing. With a Chromium-based default
+browser (such as Chrome or Edge), ggpdf opens maximized using its own browser
+profile in `%LOCALAPPDATA%\ggpdf\`. This profile does not share cookies,
+extensions, or browser settings with your regular browser. Other browsers
+control their own window size.
 
 ### Without installing
 
@@ -60,45 +60,33 @@ python3 preview.py document.pdf
 
 ## Keys
 
-| Keys                | Action                          |
-| ------------------- | ------------------------------- |
-| `gg` / `G`          | Go to top / bottom              |
-| `j` / `k`           | Scroll down / up 50 px          |
-| `Ctrl+d` / `Ctrl+u` | Scroll down / up 150 px         |
-| `Ctrl+k` / `Ctrl+j` | Zoom in / out                   |
-| `Ctrl+0`            | Reset zoom to 100%              |
-| `i`                 | Toggle dark/light mode          |
-| `q`                 | Close preview                   |
-| `c`                 | Enter text cursor mode          |
-| `v` / `Shift+v`     | Select characters / whole lines |
+| Keys                | Action                       |
+| ------------------- | ---------------------------- |
+| `gg` / `G`          | Go to top / bottom           |
+| `j` / `k`           | Scroll down / up 50 px       |
+| `Ctrl+d` / `Ctrl+u` | Scroll down / up 150 px      |
+| `Ctrl+k` / `Ctrl+j` | Zoom in / out                |
+| `Ctrl+0`            | Reset zoom to 100%           |
+| `i`                 | Toggle dark/light mode       |
+| `q`                 | Close ggpdf                  |
+| `c`                 | Enter/Leave text cursor mode |
+| `v` / `Shift+v`     | `VISUAL` / `VISUAL LINE`     |
 
 ### Text cursor and selection
 
-`c` enters `CURSOR` mode with a text cursor and line numbers without selecting.
-`v` enters characterwise `VISUAL` mode; `Shift+v` (`V`) enters linewise
-`VISUAL LINE` mode, selecting entire text lines. Both work directly from the PDF
-or from `CURSOR` mode. Motions extend the selection; `v` and `V` switch selection
-types, or clear the selection when repeated. `Esc` clears a selection back to
-`CURSOR`; press it again to return to the plain PDF view.
-
-| Keys            | Action                                      |
-| --------------- | ------------------------------------------- |
-| `h` / `l`       | Move left / right one character             |
-| `j` / `k`       | Move down / up one text line                |
-| `w` / `b` / `e` | Next word / previous word / word end        |
-| `W` / `B` / `E` | WORD motions (punctuation stays in a word)  |
-| `0` / `^` / `$` | Go to line start / first nonblank / end     |
-| `v` / `V`       | Select characters / whole lines, or switch  |
-| `Esc`           | Clear selection, or exit from `CURSOR`      |
+| Keys            | Action                                              |
+| --------------- | --------------------------------------------------- |
+| `h` / `l`       | Move left / right one character                     |
+| `j` / `k`       | Move down / up one text line                        |
+| `w` / `b` / `e` | Next word / previous word / word end                |
+| `W` / `B` / `E` | WORD motions (punctuation stays in a word)          |
+| `0` / `^` / `$` | Go to line start / first nonblank / end             |
+| `Esc`           | Clear selection, or exit from `CURSOR`              |
 | `y`             | Copy selection and exit (linewise includes newline) |
-| `is` / `ip`     | Select sentence / paragraph in `VISUAL`     |
-| `yis` / `yip`   | Copy sentence / paragraph in `CURSOR`, exit |
+| `is` / `ip`     | Select sentence / paragraph in `VISUAL`             |
+| `yis` / `yip`   | Copy sentence / paragraph in `CURSOR`, exit         |
 
-Prefix `h/j/k/l` and word motions with a count (e.g. `3j`, `2w`, `4l`). Line
-movement crosses pages and extends the selection when anchored. `Cmd+c` (or
-`Ctrl+c`) also copies an active
-Visual selection. `q` closes the preview even in a text mode. Zooming or
-rotating the PDF exits text mode.
+Prefix `h/j/k/l` and word motions with a count (e.g. `3j`, `2w`, `4l`).
 
 ## Appearance
 

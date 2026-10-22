@@ -288,6 +288,19 @@ test("V selects complete lines, y copies a trailing newline, and v switches back
     visual.clearFlash();
 });
 
+test("c behaves like Escape: clears a mark first, then exits cursor mode", async () => {
+    const visual = viewer(["abc"]);
+    visual.range = () => null;
+    visual.handleKey({ key: "v" });
+    visual.handleKey({ key: "c" });
+    await visual.pending;
+    assert.equal(visual.active, true);
+    assert.equal(visual.anchor, null);
+    assert.equal(visual.marking, false);
+    visual.handleKey({ key: "c" });
+    assert.equal(visual.active, false);
+});
+
 test("repeating v or V clears its selection without leaving cursor mode", async () => {
     for (const key of ["v", "V"]) {
         const visual = viewer(["abc"]);
