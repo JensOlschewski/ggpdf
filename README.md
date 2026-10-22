@@ -56,42 +56,43 @@ python3 preview.py document.pdf
 
 ## Keys
 
-| Keys                | Action                  |
-| ------------------- | ----------------------- |
-| `gg` / `G`          | Go to top / bottom      |
-| `j` / `k`           | Scroll down / up 50 px  |
-| `Ctrl+d` / `Ctrl+u` | Scroll down / up 150 px |
-| `Ctrl+k` / `Ctrl+j` | Zoom in / out           |
-| `Ctrl+0`            | Reset zoom to 100%      |
-| `i`                 | Toggle dark/light mode  |
-| `q`                 | Close preview           |
-| `Shift+v`           | Enter text cursor mode  |
+| Keys                | Action                          |
+| ------------------- | ------------------------------- |
+| `gg` / `G`          | Go to top / bottom              |
+| `j` / `k`           | Scroll down / up 50 px          |
+| `Ctrl+d` / `Ctrl+u` | Scroll down / up 150 px         |
+| `Ctrl+k` / `Ctrl+j` | Zoom in / out                   |
+| `Ctrl+0`            | Reset zoom to 100%              |
+| `i`                 | Toggle dark/light mode          |
+| `q`                 | Close preview                   |
+| `c`                 | Enter text cursor mode          |
+| `v` / `Shift+v`     | Select characters / whole lines |
 
 ### Text cursor and selection
 
-`Shift+v` enters `CURSOR` mode with a text cursor and line numbers. Navigate
-without selecting, then press `v` to anchor the cursor and enter `VISUAL` mode.
-Motions extend the selection from that anchor. Press `v` or `Esc` in `VISUAL` to
-clear the selection and return to `CURSOR`; `Esc` in `CURSOR` returns to the
-plain PDF view. `Shift+v` exits directly to the PDF view from either text mode.
-This entry/exit shortcut is ggpdf-specific; in Vim, `V` starts linewise Visual
-mode.
+`c` enters `CURSOR` mode with a text cursor and line numbers without selecting.
+`v` enters characterwise `VISUAL` mode; `Shift+v` (`V`) enters linewise
+`VISUAL LINE` mode, selecting entire text lines. Both work directly from the PDF
+or from `CURSOR` mode. Motions extend the selection; `v` and `V` switch selection
+types, or clear the selection when repeated. `Esc` clears a selection back to
+`CURSOR`; press it again to return to the plain PDF view.
 
 | Keys            | Action                                      |
 | --------------- | ------------------------------------------- |
 | `h` / `l`       | Move left / right one character             |
 | `j` / `k`       | Move down / up one text line                |
 | `w` / `b` / `e` | Next word / previous word / word end        |
-| `0` / `$`       | Go to line start / end                      |
-| `v`             | Start or clear a Visual selection           |
+| `W` / `B` / `E` | WORD motions (punctuation stays in a word)  |
+| `0` / `^` / `$` | Go to line start / first nonblank / end     |
+| `v` / `V`       | Select characters / whole lines, or switch  |
 | `Esc`           | Clear selection, or exit from `CURSOR`      |
-| `Shift+v`       | Exit directly from either text mode         |
-| `y`             | Copy Visual selection and exit              |
+| `y`             | Copy selection and exit (linewise includes newline) |
 | `is` / `ip`     | Select sentence / paragraph in `VISUAL`     |
 | `yis` / `yip`   | Copy sentence / paragraph in `CURSOR`, exit |
 
-Prefix `j` / `k` with a count (e.g. `3j`, `10k`). Movement crosses pages and
-extends the selection when anchored. `Cmd+c` (or `Ctrl+c`) also copies an active
+Prefix `h/j/k/l` and word motions with a count (e.g. `3j`, `2w`, `4l`). Line
+movement crosses pages and extends the selection when anchored. `Cmd+c` (or
+`Ctrl+c`) also copies an active
 Visual selection. `q` closes the preview even in a text mode. Zooming or
 rotating the PDF exits text mode.
 

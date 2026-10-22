@@ -59,9 +59,8 @@ window.PDFPreviewVisualSelection = class {
 
     handleKey(event) {
         if (event.ctrlKey || event.metaKey || event.altKey) return false;
-        if (event.key === "V") {
-            if (this.active) this.exit();
-            else this.enter();
+        if (!this.active && ["c", "v", "V"].includes(event.key)) {
+            this.enter(event.key);
             return true;
         }
         if (!this.active) return false;
@@ -101,18 +100,25 @@ window.PDFPreviewVisualSelection = class {
             this.command = "i";
             return true;
         }
-        if (!["h", "j", "k", "l", "w", "b", "e", "0", "$", "y", "v"].includes(event.key)) {
+        if (!["h", "j", "k", "l", "w", "b", "e", "W", "B", "E", "0", "^", "$", "y", "v", "V"].includes(event.key)) {
             // Do not let normal-mode j/k/gg/G scroll a stale selection.
             if (event.key === "q" || event.key === "i") return false;
             return true;
         }
-        if (event.key === "v") this.marking = !this.marking;
-        this.queue(async (generation) => {
-            if (event.key === "v") {
-                this.anchor = this.anchor ? null : { ...this.cursor };
+        if (event.key === "v" || event.key === "V") {
+            const linewise = event.key === "V";
+            const deselect = this.marking && this.linewise === linewise;
+            this.marking = !deselect;
+            this.linewise = !deselect && linewise;
+            this.queue(() => {
+                this.anchor = deselect ? null : this.anchor ?? { ...this.cursor };
                 this.paint();
-            } else if (event.key === "y") await this.yank();
-            else await this.move(event.key, generation, event.key === "j" || event.key === "k" ? count : 1);
+            });
+            return true;
+        }
+        this.queue(async (generation) => {
+            if (event.key === "y") await this.yank();
+            else await this.move(event.key, generation, count);
         });
         return true;
     }
@@ -130,6 +136,7 @@ window.PDFPreviewVisualSelection = class {
 
     stopMark() {
         this.marking = false;
+        this.linewise = false;
         this.command = null;
         this.count = "";
         this.queue(() => {
@@ -138,13 +145,14 @@ window.PDFPreviewVisualSelection = class {
         });
     }
 
-    async enter() {
+    async enter(mode = "c") {
         this.clearFlash();
         const generation = ++this.generation;
         this.active = true;
         this.command = null;
         this.count = "";
-        this.marking = false;
+        this.marking = mode !== "c";
+        this.linewise = mode === "V";
         this.anchor = this.cursor = null;
         this.models.clear();
         this.app.pdfViewer.viewer.classList.add("pdf-visual-mode");
@@ -179,6 +187,7 @@ window.PDFPreviewVisualSelection = class {
                 }
                 window.getSelection()?.removeAllRanges();
                 this.cursor = { ...start };
+                if (this.marking) this.anchor = { ...start };
                 this.column = start.character;
                 this.paint();
             } catch (error) {
@@ -198,6 +207,7 @@ window.PDFPreviewVisualSelection = class {
         this.command = null;
         this.count = "";
         this.marking = false;
+        this.linewise = false;
         ++this.generation;
         this.anchor = this.cursor = null;
         this.app.pdfViewer.viewer.classList.remove("pdf-visual-mode");
@@ -358,8 +368,8 @@ window.PDFPreviewVisualSelection = class {
             for (let index = first; index <= last; index++) {
                 const line = model.lines[index];
                 if (!line) continue;
-                const from = page === start.page && index === start.line ? start.character : 0;
-                const to = page === end.page && index === end.line ? end.character + 1 : line.characters.length;
+                const from = !this.linewise && page === start.page && index === start.line ? start.character : 0;
+                const to = !this.linewise && page === end.page && index === end.line ? end.character + 1 : line.characters.length;
                 result.push(line.characters.slice(from, to));
             }
         }
@@ -368,7 +378,7 @@ window.PDFPreviewVisualSelection = class {
 
     selectedText() {
         return this.selectedLines().map((line) => line.map(({ text }) => text).join(""))
-            .join("\n").replaceAll("\u0000", "");
+            .join("\n").replaceAll("\u0000", "") + (this.linewise && this.anchor ? "\n" : "");
     }
 
     range(characters) {
@@ -439,6 +449,7 @@ window.PDFPreviewVisualSelection = class {
         const bounds = this.textObject(kind);
         if (!bounds) return;
         [this.anchor, this.cursor] = bounds;
+        this.linewise = false;
         this.column = this.cursor.character;
         this.paint();
     }
@@ -459,50 +470,57 @@ window.PDFPreviewVisualSelection = class {
                 label.classList.toggle("is-current", current);
             });
         }
-        const mode = this.anchor ? "VISUAL" : "CURSOR";
-        const help = this.anchor ? "h/j/k/l/w/b/e select · 3j/3k jump · is/ip · y copy" : "h/j/k/l/w/b/e move · 3j/3k jump · yis/yip · v mark";
-        this.message(`${mode} · Page ${this.cursor.page} · Line ${this.cursor.line + 1} · ${help} · Esc ${this.anchor ? "unmark" : "exit"} · Shift+v exit`);
+        const mode = this.anchor ? this.linewise ? "VISUAL LINE" : "VISUAL" : "CURSOR";
+        const help = this.anchor ? "h/j/k/l/w/b/e/W/B/E select · counts · 0/^/$ · v/V switch · is/ip · y copy" : "h/j/k/l/w/b/e/W/B/E move · counts · 0/^/$ · yis/yip · v/V mark";
+        this.message(`${mode} · Page ${this.cursor.page} · Line ${this.cursor.line + 1} · ${help} · Esc ${this.anchor ? "unmark" : "exit"}`);
     }
 
     async move(key, generation, count = 1) {
         const next = { ...this.cursor };
         let model = this.models.get(next.page);
         let line = model.lines[next.line];
-        if (key === "w" || key === "b" || key === "e") {
-            // Treat punctuation as its own word, as Vim's lowercase motions do.
+        if ("wbeWBE".includes(key)) {
+            // Lowercase motions treat punctuation as a word; uppercase motions
+            // treat everything between whitespace as one WORD.
+            const bigWord = key !== key.toLowerCase();
+            const motion = key.toLowerCase();
             const positions = model.lines.flatMap((row, index) => row.characters.map((entry, character) => ({
                 line: index, character, type: /\s/u.test(entry.text) ? 0 :
-                    /[\p{L}\p{N}_]/u.test(entry.text) ? 1 : 2,
+                    bigWord || /[\p{L}\p{N}_]/u.test(entry.text) ? 1 : 2,
             })));
             const current = positions.findIndex((item) =>
                 item.line === next.line && item.character === next.character);
             let index = current;
-            if (key === "w") {
-                const type = positions[index].type;
-                if (type) while (index + 1 < positions.length &&
-                    positions[index + 1].line === positions[index].line &&
-                    positions[index + 1].type === type) index++;
-                index++;
-                while (index < positions.length && positions[index].type === 0) index++;
-                if (index === positions.length) index = current;
-            } else if (key === "b") {
-                index = Math.max(0, index - 1);
-                while (index > 0 && positions[index].type === 0) index--;
-                const type = positions[index].type;
-                while (index > 0 && positions[index - 1].line === positions[index].line &&
-                    positions[index - 1].type === type) index--;
-            } else {
-                const type = positions[index].type;
-                if (!type) {
-                    while (index + 1 < positions.length && positions[index].type === 0) index++;
-                } else if (index + 1 < positions.length &&
-                    (positions[index + 1].type !== type || positions[index + 1].line !== positions[index].line)) {
+            for (let step = 0; step < count; step++) {
+                const before = index;
+                if (motion === "w") {
+                    const type = positions[index].type;
+                    if (type) while (index + 1 < positions.length &&
+                        positions[index + 1].line === positions[index].line &&
+                        positions[index + 1].type === type) index++;
                     index++;
-                    while (index + 1 < positions.length && positions[index].type === 0) index++;
+                    while (index < positions.length && positions[index].type === 0) index++;
+                    if (index === positions.length) index = before;
+                } else if (motion === "b") {
+                    index = Math.max(0, index - 1);
+                    while (index > 0 && positions[index].type === 0) index--;
+                    const type = positions[index].type;
+                    while (index > 0 && positions[index - 1].line === positions[index].line &&
+                        positions[index - 1].type === type) index--;
+                } else {
+                    const type = positions[index].type;
+                    if (!type) {
+                        while (index + 1 < positions.length && positions[index].type === 0) index++;
+                    } else if (index + 1 < positions.length &&
+                        (positions[index + 1].type !== type || positions[index + 1].line !== positions[index].line)) {
+                        index++;
+                        while (index + 1 < positions.length && positions[index].type === 0) index++;
+                    }
+                    const word = positions[index].type;
+                    while (index + 1 < positions.length && positions[index + 1].line === positions[index].line &&
+                        positions[index + 1].type === word) index++;
                 }
-                const word = positions[index].type;
-                while (index + 1 < positions.length && positions[index + 1].line === positions[index].line &&
-                    positions[index + 1].type === word) index++;
+                if (index === before) break;
             }
             next.line = positions[index].line;
             next.character = positions[index].character;
@@ -537,9 +555,11 @@ window.PDFPreviewVisualSelection = class {
             line = model.lines[next.line];
             next.character = Math.min(this.column, line.characters.length - 1);
         } else {
-            if (key === "h") next.character--;
-            if (key === "l") next.character++;
+            if (key === "h") next.character -= count;
+            if (key === "l") next.character += count;
             if (key === "0") next.character = 0;
+            if (key === "^") next.character = Math.max(0,
+                line.characters.findIndex(({ text }) => /\S/u.test(text)));
             if (key === "$") next.character = line.characters.length - 1;
             next.character = Math.max(0, Math.min(next.character, line.characters.length - 1));
             this.column = next.character;
@@ -562,7 +582,7 @@ window.PDFPreviewVisualSelection = class {
     async yank(bounds = this.bounds()) {
         const lines = this.selectedLines(...bounds);
         const text = lines.map((line) => line.map(({ text }) => text).join(""))
-            .join("\n").replaceAll("\u0000", "");
+            .join("\n").replaceAll("\u0000", "") + (this.linewise && this.anchor ? "\n" : "");
         const generation = this.generation;
         try {
             await navigator.clipboard.writeText(text);
