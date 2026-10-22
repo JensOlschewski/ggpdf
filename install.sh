@@ -54,6 +54,7 @@ plist_set :CFBundleIdentifier string local.jens.pdf-preview
 plist_set :CFBundleName string ggpdf
 plist_set :CFBundleDisplayName string ggpdf
 plist_set :CFBundleIconFile string ggpdf.icns
+"$PLISTBUDDY" -c 'Delete :CFBundleIconName' "$PLIST" 2>/dev/null || true
 plist_set :CFBundleShortVersionString string 1.0.0
 plist_set :LSUIElement bool true
 
