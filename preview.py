@@ -118,7 +118,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", getattr(self, "cache_control", "no-store"))
         self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
         super().end_headers()
 
@@ -200,9 +200,20 @@ class Handler(BaseHTTPRequestHandler):
                 return
             # Stream PDFs instead of retaining whole documents in server memory.
             with path.open("rb") as source:
+                stat = os.fstat(source.fileno())
+                if not route.startswith("document/"):
+                    etag = '"{:x}-{:x}"'.format(stat.st_mtime_ns, stat.st_size)
+                    self.cache_control = "private, max-age=0, must-revalidate"
+                    if self.headers.get("If-None-Match") == etag:
+                        self.send_response(304)
+                        self.send_header("ETag", etag)
+                        self.end_headers()
+                        return
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
-                self.send_header("Content-Length", str(os.fstat(source.fileno()).st_size))
+                self.send_header("Content-Length", str(stat.st_size))
+                if not route.startswith("document/"):
+                    self.send_header("ETag", etag)
                 self.end_headers()
                 if self.command != "HEAD":
                     shutil.copyfileobj(source, self.wfile)
