@@ -30,8 +30,9 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 Run the installer again to update ggpdf's **Open with** registration (including
-the path to this checkout). It does not change the default PDF app; keep the
-checkout in place after installing.
+the path to this checkout). It builds a small `ggpdf.exe` launcher with its own
+name and icon in `%LOCALAPPDATA%\ggpdf\`. It does not change the default PDF
+app; keep the checkout in place after installing.
 
 ### Without installing
 

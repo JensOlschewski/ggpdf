@@ -63,7 +63,48 @@ if (Test-Path -LiteralPath $pythonw -PathType Leaf) {
     $python = $pythonw
 }
 
-$openCommand = '"{0}" "{1}" "%1"' -f $python, $scriptPath
+# Give Windows a dedicated executable identity instead of registering pythonw.exe
+# as the PDF app. Keep it alongside preview.py's per-user runtime state.
+$appDir = Join-Path $env:LOCALAPPDATA 'ggpdf'
+New-Item -Path $appDir -ItemType Directory -Force | Out-Null
+$launcherPath = Join-Path $appDir 'ggpdf.exe'
+$iconPath = Join-Path $appDir 'ggpdf.ico'
+$sourcePath = Join-Path $PSScriptRoot 'launcher.cs'
+
+Add-Type -AssemblyName System.Drawing
+$bitmap = [System.Drawing.Bitmap]::new(64, 64)
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+$font = [System.Drawing.Font]::new('Arial', 44, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
+$brush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::White)
+try {
+    $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $graphics.Clear([System.Drawing.Color]::FromArgb(44, 48, 64))
+    $graphics.DrawString('g', $font, $brush, 12, 3)
+    $handle = $bitmap.GetHicon()
+    $icon = [System.Drawing.Icon]::FromHandle($handle)
+    $stream = [System.IO.File]::Create($iconPath)
+    try { $icon.Save($stream) } finally { $stream.Dispose(); $icon.Dispose() }
+} finally {
+    $brush.Dispose()
+    $font.Dispose()
+    $graphics.Dispose()
+    $bitmap.Dispose()
+}
+
+$stagedLauncher = Join-Path $appDir ("ggpdf-{0}.exe" -f [guid]::NewGuid())
+try {
+    $compiler = New-Object System.CodeDom.Compiler.CompilerParameters
+    $compiler.CompilerOptions = '/win32icon:"{0}"' -f $iconPath
+    Add-Type -Path $sourcePath -OutputAssembly $stagedLauncher `
+        -OutputType WindowsApplication -CompilerParameters $compiler
+    Move-Item -LiteralPath $stagedLauncher -Destination $launcherPath -Force
+} finally {
+    if (Test-Path -LiteralPath $stagedLauncher) {
+        Remove-Item -LiteralPath $stagedLauncher -Force
+    }
+}
+
+$openCommand = '"{0}" "%1"' -f $launcherPath
 $classesRoot = 'HKCU:\Software\Classes'
 $progId = 'ggpdf.PDF'
 
@@ -83,10 +124,16 @@ function Set-RegistryDefault {
 # Register the ggpdf file type.
 $progIdPath = Join-Path $classesRoot $progId
 Set-RegistryDefault -Path $progIdPath -Value 'ggpdf'
-Set-RegistryDefault -Path "$progIdPath\DefaultIcon" -Value (
-    '"{0}",0' -f $python
-)
+Set-RegistryDefault -Path "$progIdPath\DefaultIcon" -Value ('"{0}",0' -f $launcherPath)
 Set-RegistryDefault -Path "$progIdPath\shell\open\command" -Value $openCommand
+
+$applicationPath = "$classesRoot\Applications\ggpdf.exe"
+New-Item -Path $applicationPath -Force | Out-Null
+New-ItemProperty -Path $applicationPath -Name FriendlyAppName -Value 'ggpdf' -Force | Out-Null
+Set-RegistryDefault -Path "$applicationPath\DefaultIcon" -Value ('"{0}",0' -f $launcherPath)
+Set-RegistryDefault -Path "$applicationPath\shell\open\command" -Value $openCommand
+New-Item -Path "$applicationPath\SupportedTypes" -Force | Out-Null
+New-ItemProperty -Path "$applicationPath\SupportedTypes" -Name '.pdf' -Value '' -Force | Out-Null
 
 # Add ggpdf to the PDF "Open with" list without changing the default app.
 $openWithPath = "$classesRoot\.pdf\OpenWithProgids"
@@ -101,6 +148,24 @@ New-ItemProperty `
 # Register application capabilities for Windows' app picker.
 $capabilitiesPath = 'HKCU:\Software\ggpdf\Capabilities'
 New-Item -Path $capabilitiesPath -Force | Out-Null
+
+New-ItemProperty `
+    -Path 'HKCU:\Software\ggpdf' `
+    -Name 'Python' `
+    -Value $python `
+    -Force | Out-Null
+
+New-ItemProperty `
+    -Path 'HKCU:\Software\ggpdf' `
+    -Name 'Script' `
+    -Value $scriptPath `
+    -Force | Out-Null
+
+New-ItemProperty `
+    -Path $capabilitiesPath `
+    -Name 'ApplicationIcon' `
+    -Value ('"{0}",0' -f $launcherPath) `
+    -Force | Out-Null
 
 New-ItemProperty `
     -Path $capabilitiesPath `
