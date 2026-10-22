@@ -1,5 +1,5 @@
 on run
-    set selectedFiles to choose file with prompt "Open PDFs in PDF Preview" of type {"com.adobe.pdf"} with multiple selections allowed
+    set selectedFiles to choose file with prompt "Open PDFs in ggpdf" of type {"com.adobe.pdf"} with multiple selections allowed
     open selectedFiles
 end run
 
@@ -12,6 +12,6 @@ on open selectedFiles
     try
         do shell script launchCommand
     on error errorMessage
-        display alert "PDF Preview could not open the document" message errorMessage as critical
+        display alert "ggpdf could not open the document" message errorMessage as critical
     end try
 end open

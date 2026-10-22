@@ -60,8 +60,7 @@ window.PDFPreviewVisualSelection = class {
     handleKey(event) {
         if (event.ctrlKey || event.metaKey || event.altKey) return false;
         if (event.key === "V") {
-            if (this.marking) this.stopMark();
-            else if (this.active) this.exit();
+            if (this.active) this.exit();
             else this.enter();
             return true;
         }
@@ -149,7 +148,7 @@ window.PDFPreviewVisualSelection = class {
         this.anchor = this.cursor = null;
         this.models.clear();
         this.app.pdfViewer.viewer.classList.add("pdf-visual-mode");
-        this.message("COPY · Loading text…");
+        this.message("CURSOR · Loading text…");
         this.pending = (async () => {
             try {
                 await this.ensurePage(this.app.pdfViewer.currentPageNumber);
@@ -460,9 +459,9 @@ window.PDFPreviewVisualSelection = class {
                 label.classList.toggle("is-current", current);
             });
         }
-        const mode = this.anchor ? "VISUAL" : "COPY";
+        const mode = this.anchor ? "VISUAL" : "CURSOR";
         const help = this.anchor ? "h/j/k/l/w/b/e select · 3j/3k jump · is/ip · y copy" : "h/j/k/l/w/b/e move · 3j/3k jump · yis/yip · v mark";
-        this.message(`${mode} · Page ${this.cursor.page} · Line ${this.cursor.line + 1} · ${help} · Esc exit`);
+        this.message(`${mode} · Page ${this.cursor.page} · Line ${this.cursor.line + 1} · ${help} · Esc ${this.anchor ? "unmark" : "exit"} · Shift+v exit`);
     }
 
     async move(key, generation, count = 1) {

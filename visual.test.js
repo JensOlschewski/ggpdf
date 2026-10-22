@@ -176,8 +176,8 @@ test("zoom exits cursor mode and clears the marked range", () => {
     assert.equal(visual.models.size, 0);
 });
 
-test("Escape or Shift+V clears a mark, then exits cursor mode", async () => {
-    for (const key of ["Escape", "V"]) {
+test("Escape or v clears a mark and leaves cursor mode active", async () => {
+    for (const key of ["Escape", "v"]) {
         const visual = viewer(["abc"]);
         visual.range = () => null;
         visual.handleKey({ key: "v" });
@@ -186,7 +186,26 @@ test("Escape or Shift+V clears a mark, then exits cursor mode", async () => {
         assert.equal(visual.active, true);
         assert.equal(visual.anchor, null);
         assert.equal(visual.marking, false);
-        visual.handleKey({ key });
+        assert.match(visual.status.textContent, /^CURSOR ·/);
+        visual.handleKey({ key: "Escape" });
         assert.equal(visual.active, false);
+    }
+});
+
+test("Shift+V exits directly from cursor or visual mode", async () => {
+    for (const marked of [false, true]) {
+        const visual = viewer(["abc"]);
+        visual.range = () => null;
+        if (marked) {
+            visual.handleKey({ key: "v" });
+            await visual.pending;
+            assert.match(visual.status.textContent, /^VISUAL ·/);
+        }
+        visual.handleKey({ key: "V" });
+        await visual.pending;
+        assert.equal(visual.active, false);
+        assert.equal(visual.anchor, null);
+        assert.equal(visual.marking, false);
+        assert.equal(visual.status.hidden, true);
     }
 });

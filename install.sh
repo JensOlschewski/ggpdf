@@ -3,23 +3,47 @@
 set -eu
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-APP="$HOME/Applications/PDF Preview.app"
+APP_DIR="$HOME/Applications"
+APP="$APP_DIR/ggpdf.app"
+LEGACY_APP="$APP_DIR/PDF Preview.app"
 PLISTBUDDY=/usr/libexec/PlistBuddy
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
-if [ -e "$APP" ]; then
-    echo "Application already exists: $APP" >&2
-    exit 1
-fi
+for EXISTING in "$APP" "$LEGACY_APP"; do
+    if [ -e "$EXISTING" ] || [ -L "$EXISTING" ]; then
+        if [ ! -d "$EXISTING" ] || [ -L "$EXISTING" ] || \
+            [ "$("$PLISTBUDDY" -c 'Print :CFBundleIdentifier' "$EXISTING/Contents/Info.plist" 2>/dev/null || true)" != 'local.jens.pdf-preview' ]; then
+            echo "Refusing to replace an unrelated application: $EXISTING" >&2
+            exit 1
+        fi
+    fi
+done
 
 SCRIPT_PATH=$(printf '%s' "$ROOT/preview.py" | sed 's/\\/\\\\/g; s/"/\\"/g')
 
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+mkdir -p "$APP_DIR"
+TMP=$(mktemp -d "$APP_DIR/.ggpdf-install.XXXXXX")
+committed=0
+placed=0
+cleanup() {
+    status=$?
+    trap - EXIT
+    if [ "$committed" -eq 0 ]; then
+        if [ "$placed" -eq 1 ]; then rm -rf "$APP"; fi
+        if [ -d "$TMP/previous.app" ]; then
+            mv "$TMP/previous.app" "$APP"
+            "$LSREGISTER" -f "$APP" || true
+        fi
+    fi
+    rm -rf "$TMP"
+    exit "$status"
+}
+trap cleanup EXIT
 sed "s|__GGPDF_PREVIEW_SCRIPT__|$SCRIPT_PATH|" "$ROOT/launcher.applescript" > "$TMP/launcher.applescript"
 
-/usr/bin/osacompile -o "$APP" "$TMP/launcher.applescript"
+/usr/bin/osacompile -o "$TMP/ggpdf.app" "$TMP/launcher.applescript"
 
-PLIST="$APP/Contents/Info.plist"
+PLIST="$TMP/ggpdf.app/Contents/Info.plist"
 
 plist_set() {
     "$PLISTBUDDY" -c "Set $1 $3" "$PLIST" 2>/dev/null || \
@@ -27,8 +51,8 @@ plist_set() {
 }
 
 plist_set :CFBundleIdentifier string local.jens.pdf-preview
-plist_set :CFBundleName string "PDF Preview"
-plist_set :CFBundleDisplayName string "PDF Preview"
+plist_set :CFBundleName string ggpdf
+plist_set :CFBundleDisplayName string ggpdf
 plist_set :CFBundleShortVersionString string 1.0.0
 plist_set :LSUIElement bool true
 
@@ -43,7 +67,16 @@ plist_set :LSUIElement bool true
 "$PLISTBUDDY" -c "Add :CFBundleDocumentTypes:0:CFBundleTypeExtensions array" "$PLIST"
 "$PLISTBUDDY" -c "Add :CFBundleDocumentTypes:0:CFBundleTypeExtensions:0 string pdf" "$PLIST"
 
-/usr/bin/codesign --force --sign - "$APP"
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP"
+/usr/bin/codesign --force --sign - "$TMP/ggpdf.app"
+if [ -d "$APP" ]; then mv "$APP" "$TMP/previous.app"; fi
+mv "$TMP/ggpdf.app" "$APP"
+placed=1
+"$LSREGISTER" -f "$APP"
+committed=1
+
+if [ -d "$LEGACY_APP" ]; then
+    "$LSREGISTER" -u "$LEGACY_APP" || true
+    rm -rf "$LEGACY_APP"
+fi
 
 echo "Installed $APP"

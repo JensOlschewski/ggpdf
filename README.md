@@ -5,6 +5,9 @@ text selection.
 
 ## Install & use
 
+### Requirements
+ - Python 3
+
 ### macOS
 
 ```sh
@@ -13,18 +16,12 @@ cd ggpdf
 ./install.sh
 ```
 
-Open any PDF with "PDF Preview" (Finder's "Open With", or set it as the default
-PDF handler). Without installing, run a PDF directly:
-
-```sh
-python3 preview.py document.pdf
-```
-
-See [Open](#open) for details on what the installer does.
+This installs `~/Applications/ggpdf.app`. Run it again to update the launcher;
+it also replaces an older `PDF Preview.app` installed by ggpdf. The existing
+default PDF handler is not changed.
 
 ### Windows (PowerShell)
 
-Install Python 3, then in PowerShell run:
 
 ```powershell
 git clone https://github.com/JensOlschewski/ggpdf
@@ -32,61 +29,58 @@ cd ggpdf
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Right-click a PDF and select **Open with → Choose another app → ggpdf PDF Preview**.
-The installer registers an option for the current user; it does not change the
-default PDF app. Re-run the installer to update an existing registration.
-If Windows previously made Python the default for PDFs, choose ggpdf in the
-**Open with** dialog and select **Always** to replace that choice.
-Keep the cloned folder in place after installation. Without
-installing, open a PDF from PowerShell with `py -3 .\preview.py .\document.pdf`
-(or `python .\preview.py .\document.pdf` if `py` is unavailable).
+Run the installer again to update ggpdf's **Open with** registration (including
+the path to this checkout). It does not change the default PDF app; keep the
+checkout in place after installing.
 
-## Keys
+### Without installing
 
-| Keys            | Action                                                   |
-| --------------- | -------------------------------------------------------- |
-| gg / G          | Beginning / end                                          |
-| j / k           | Scroll down / up 50 px                                   |
-| Ctrl+d / Ctrl+u | Scroll down / up 150 px                                  |
-| Ctrl+k / Ctrl+j | Zoom in / out                                            |
-| Ctrl+0          | 100% zoom                                                |
-| i               | Toggle dark/light mode                                   |
-| q               | Close the preview window                                 |
-| Shift+v         | Enter/exit selection mode (cursor + line numbers)        |
-| v               | Toggle selection anchor (start/stop extending selection) |
-
-## Keys in selection mode
-
-Shift+v enters mode with a text cursor and visible line numbers. By default the
-cursor just moves (status `COPY`); pressing `v` drops an anchor and starts
-extending a selection (status `VISUAL`), pressing `v` again drops the anchor.
-Shift+v exits back to the plain PDF view.
-
-Vim motions within this mode: `h`/`l` move by character, `j`/`k` by text line,
-`w`/`b`/`e` by word, `0`/`$` to line start/end. Prefix `j` or `k` with a count
-(for example `3j`, `10k`) to jump that many lines; this also extends a selection
-while anchored, and crosses page boundaries.
-
-## Open
-
-From a clone of this repository, run:
+On macOS, Linux, or Windows, run a PDF directly with Python 3:
 
 ```sh
 python3 preview.py document.pdf
 ```
 
-On macOS, optionally run `./install.sh` to install a file-opening adapter at
-`~/Applications/PDF Preview.app`. The installer refuses to overwrite an existing
-app. Open the app directly to choose PDFs from a file picker, or register it as
-the default PDF handler in macOS settings. Its source is `launcher.applescript`.
-PDFs open in the system's default browser. On macOS, if it's Chromium-based (Chrome,
-Edge, Brave, Vivaldi, Chromium, Opera, Arc), they open as a standalone app
-window without the tab strip or address bar; other browsers (Safari, Firefox)
-open a normal window. On Windows, Chromium-based default browsers open an app
-window; other default browsers open the viewer normally.
-The viewer is document-only: no PDF toolbar, reserved header space, or page
-borders/shadows. Use Cmd+f (macOS) or Ctrl+f (Windows) for search; its panel
-appears only while searching.
+## Keys
+
+| Keys                | Action                  |
+| ------------------- | ----------------------- |
+| `gg` / `G`          | Go to top / bottom      |
+| `j` / `k`           | Scroll down / up 50 px  |
+| `Ctrl+d` / `Ctrl+u` | Scroll down / up 150 px |
+| `Ctrl+k` / `Ctrl+j` | Zoom in / out           |
+| `Ctrl+0`            | Reset zoom to 100%      |
+| `i`                 | Toggle dark/light mode  |
+| `q`                 | Close preview           |
+| `Shift+v`           | Enter text cursor mode  |
+
+### Text cursor and selection
+
+`Shift+v` enters `CURSOR` mode with a text cursor and line numbers. Navigate
+without selecting, then press `v` to anchor the cursor and enter `VISUAL` mode.
+Motions extend the selection from that anchor. Press `v` or `Esc` in `VISUAL`
+to clear the selection and return to `CURSOR`; `Esc` in `CURSOR` returns to the
+plain PDF view. `Shift+v` exits directly to the PDF view from either text mode.
+This entry/exit shortcut is ggpdf-specific; in Vim, `V` starts linewise Visual
+mode.
+
+| Keys            | Action                                      |
+| --------------- | ------------------------------------------- |
+| `h` / `l`       | Move left / right one character             |
+| `j` / `k`       | Move down / up one text line                |
+| `w` / `b` / `e` | Next word / previous word / word end        |
+| `0` / `$`       | Go to line start / end                      |
+| `v`             | Start or clear a Visual selection           |
+| `Esc`           | Clear selection, or exit from `CURSOR`      |
+| `Shift+v`       | Exit directly from either text mode         |
+| `y`             | Copy Visual selection and exit              |
+| `is` / `ip`   | Select sentence / paragraph in `VISUAL`     |
+| `yis` / `yip` | Copy sentence / paragraph in `CURSOR`, exit |
+
+Prefix `j` / `k` with a count (e.g. `3j`, `10k`). Movement crosses pages and
+extends the selection when anchored. `Cmd+c` (or `Ctrl+c`) also copies an
+active Visual selection. `q` closes the preview even in a text mode. Zooming
+or rotating the PDF exits text mode.
 
 ## Appearance
 

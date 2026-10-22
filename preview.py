@@ -259,7 +259,7 @@ def ensure_server():
         token = running()
         if token:
             return token
-    raise RuntimeError("PDF Preview could not start. See " + str(CACHE / "server.log"))
+    raise RuntimeError("ggpdf could not start. See " + str(CACHE / "server.log"))
 
 
 def default_browser_bundle_id():
@@ -339,7 +339,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        message = "PDF Preview: " + str(error)
+        message = "ggpdf: " + str(error)
         if WINDOWS and not any(arg == "--serve" for arg in sys.argv[1:]) and sys.executable.lower().endswith("pythonw.exe"):
             import ctypes
             ctypes.windll.user32.MessageBoxW(None, message, "ggpdf", 0x10)

@@ -82,7 +82,7 @@ function Set-RegistryDefault {
 
 # Register the ggpdf file type.
 $progIdPath = Join-Path $classesRoot $progId
-Set-RegistryDefault -Path $progIdPath -Value 'ggpdf PDF preview'
+Set-RegistryDefault -Path $progIdPath -Value 'ggpdf'
 Set-RegistryDefault -Path "$progIdPath\DefaultIcon" -Value (
     '"{0}",0' -f $python
 )
@@ -113,7 +113,7 @@ New-ItemProperty `
     -Path $capabilitiesPath `
     -Name 'ApplicationDescription' `
     -PropertyType String `
-    -Value 'PDF preview with ggpdf' `
+    -Value 'ggpdf PDF viewer' `
     -Force | Out-Null
 
 $associationsPath = "$capabilitiesPath\FileAssociations"
@@ -163,6 +163,6 @@ namespace Ggpdf
     [IntPtr]::Zero
 )
 
-Write-Host 'ggpdf registered successfully.'
+Write-Host 'ggpdf registered/updated successfully.'
 Write-Host 'Right-click a PDF and select Open with > ggpdf.'
 Write-Host 'Your default PDF application has not been changed.'
