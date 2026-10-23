@@ -1,0 +1,5 @@
+/target
+/debug_out
+/pdfium/*.dylib
+/pdfium/*.so
+/pdfium/*.dll
