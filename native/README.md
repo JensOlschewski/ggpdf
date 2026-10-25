@@ -8,14 +8,17 @@ cd native
 ```
 
 Requires Rust/Cargo and `pdfium/libpdfium.dylib` for your Mac's architecture.
-The installer builds a release binary and creates `~/Applications/ggpdf Native.app`
+The installer builds a release binary and creates `/Applications/ggpdf Native.app`
 with a stable bundle ID (`local.jens.ggpdf.native`), PDFium, an icon, and assets.
-It does **not** replace the old PDF.js `~/Applications/ggpdf.app`, change your
-default PDF handler, or edit AeroSpace. Open the new app directly:
+It moves a previously installed `~/Applications/ggpdf Native.app` out of the
+way after checking its bundle ID. It does **not** replace the old PDF.js
+`~/Applications/ggpdf.app`, change your default PDF handler, or edit AeroSpace.
+The installer needs write access to `/Applications` and never runs Cargo as root.
+Open the new app directly:
 
 ```sh
-open -a "$HOME/Applications/ggpdf Native.app"
-open -a "$HOME/Applications/ggpdf Native.app" --args "/path/to/book.pdf"
+open -a "/Applications/ggpdf Native.app"
+open -a "/Applications/ggpdf Native.app" --args "/path/to/book.pdf"
 ```
 
 To route new windows to your PDF workspace, put this rule before your
