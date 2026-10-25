@@ -2377,7 +2377,7 @@ fn profile_document(library: &'static PdfLibrary, path: &str) -> Result<(), docu
     Ok(())
 }
 
-const WINDOW_TITLE: &str = "ggPDF";
+const WINDOW_TITLE: &str = "ggPdf";
 const WINDOW_APP_ID: &str = "local.jens.ggpdf.native";
 
 fn native_options() -> eframe::NativeOptions {
