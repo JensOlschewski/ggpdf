@@ -1,0 +1,32 @@
+# Native ggpdf (macOS)
+
+Build and install the Rust/PDFium viewer as a macOS app:
+
+```sh
+cd native
+./install-macos.sh
+```
+
+Requires Rust/Cargo and `pdfium/libpdfium.dylib` for your Mac's architecture.
+The installer builds a release binary and creates `~/Applications/ggpdf Native.app`
+with a stable bundle ID (`local.jens.ggpdf.native`), PDFium, an icon, and assets.
+It does **not** replace the old PDF.js `~/Applications/ggpdf.app`, change your
+default PDF handler, or edit AeroSpace. Open the new app directly:
+
+```sh
+open -a "$HOME/Applications/ggpdf Native.app"
+open -a "$HOME/Applications/ggpdf Native.app" --args "/path/to/book.pdf"
+```
+
+To route new windows to your PDF workspace, put this rule before your
+catch-all `on-window-detected` rule in `~/.config/aerospace/aerospace.toml`:
+
+```toml
+[[on-window-detected]]
+if.app-id = 'local.jens.ggpdf.native'
+run = ['move-node-to-workspace D', 'layout tiling', 'layout h_tiles']
+```
+
+Then run `aerospace reload-config` and reopen the app. AeroSpace still decides
+the final tile; a bundle ID makes matching reliable but cannot guarantee that
+the initial resize is invisible.

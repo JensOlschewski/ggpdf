@@ -546,10 +546,9 @@ the first run with no port bugs found — strong signal the translation is
 faithful. `cargo test`: 36/36 pass (8 config + 7 app + 4 text + 7 input +
 8 selection + 2 viewer smoke), 3x stable.
 
-Flagged, not fixed: `split_sentences` is a `.`/`!`/`?`-plus-whitespace
-heuristic, not real UAX #29 sentence segmentation (`visual.js` uses the
-browser's `Intl.Segmenter`, which Rust has no built-in equivalent for) —
-it'll mis-break on abbreviations like "Dr. Smith". And `document.rs`
+At this checkpoint, `split_sentences` used a `.`/`!`/`?`-plus-whitespace
+heuristic instead of UAX #29; the later sentence-segmentation step below
+replaced it. At this checkpoint, `document.rs` also
 doesn't synthesize a space character between text runs separated by a
 rendering gap the way `visual.js`'s `collect()` does, so a PDF whose
 content stream omits explicit space glyphs could misjoin words — not
@@ -1265,24 +1264,216 @@ Asked and answered in order of what the user actually asked for next:
     `cargo test` (72 passing) and `cargo build` passed on macOS. Live keyboard/
     visual verification is still pending. Full-document extraction currently
     runs on the UI thread when Enter is pressed and may pause on large PDFs.
-2. **Open-file UX.** `Ctrl+O` opens a native file picker (a new tab, same
-   as a CLI arg); drag-and-drop a PDF onto the window opens it the same
-   way. Part of Port order item 5 (Lifecycle) but scoped down to just
-   these two interactive paths, not "Open with" OS handoff or
-   single-instance IPC yet. Not started.
+ 2. **Open-file UX.** `Ctrl+O` opens a native file picker (a new tab, same
+    as a CLI arg); drag-and-drop a PDF onto the window opens it the same
+    way. Part of Port order item 5 (Lifecycle) but scoped down to just
+    these two interactive paths, not "Open with" OS handoff or
+    single-instance IPC yet. Implemented with `rfd` and egui's dropped-file
+    input. Failed opens leave existing tabs intact; non-PDF drops report an
+    error. Live picker and drop testing still pending.
 3. **Sentence segmentation.** Replace the `.`/`!`/`?`+whitespace regex
-   heuristic (mis-breaks on "Dr. Smith") with something closer to real
-   UAX #29 behavior — Rust has no `Intl.Segmenter` equivalent built in,
-   so this needs picking a crate (e.g. `unicode-segmentation`'s sentence
-   boundaries, if adequate) or a better heuristic, not a one-line fix.
-   Not started.
+    heuristic (mis-breaks on "Dr. Smith") with Unicode UAX #29 boundaries.
+    Implemented using `unicode-segmentation`, plus a small common-title
+    exception because UAX #29 itself splits "Dr. Smith". Paragraph gaps
+    become sentence boundaries. Tests cover titles, Unicode scalar offsets,
+    visual-line continuation and paragraph gaps; live behavior is unverified.
 4. **Cross-page gutter numbers.** Extend the gutter's relative-line-number
    accounting across page boundaries instead of only within the
    cursor's current page. Not started.
-5. **Platform coverage** (explicitly last per the user). Windows/Linux
+5. **Rendering performance** (launch, opening big PDFs, scrolling, zooming
+   all reported slow live). Root cause traced to two things: (a)
+   `progressive_render` called `Viewer::render_page` — PDFium rasterization,
+   dark-filter math, and `FPDFText_*` extraction — synchronously on the UI
+   thread every frame there was nearby unrendered work, blocking input and
+   repaints for as long as that took; (b) every near-viewport page was
+   rendered at a fixed 3x-zoom resolution (`RENDER_SCALE`) regardless of
+   the *actual* display zoom, so a long document at 100% zoom spent most
+   of its rendering budget on pixels nobody could see yet.
+   Fixed: added `render_worker.rs`, one dedicated background thread that
+   owns rendering (`viewer::prepare_page`, factored out of the old
+   `Viewer::render_page` to have no `egui::Context` dependency) and
+   communicates with the UI thread over channels (`RenderJob` in,
+   `RenderResult` out); `progressive_render` now only submits jobs and
+   applies finished results (a cheap GPU texture upload), never blocking on
+   PDFium itself. One worker thread, not a pool — `pdfium-render`'s
+   `thread_safe` feature (on by default) serializes all PDFium calls behind
+   one internal mutex regardless, so a pool would add complexity without
+   adding throughput. `app.rs`'s `OpenDocument::document` is now
+   `Arc<Document>` so the worker can hold its own cloned handle across tabs.
+   Also added `target_render_scale` (zoom times a small headroom factor,
+   capped at the old fixed ceiling): a page renders near its *current* zoom
+   instead of always at max, and `page_needs_render` (unit-tested directly)
+   decides staleness against what was *requested* rather than what was
+   actually delivered, so a page clamped below target by `max_texture_side`
+   doesn't get endlessly re-requested. `cargo test` (86 passing, including a
+   worker-thread integration test and 6 `page_needs_render` cases) and
+   `cargo build`/`--release` both clean, no warnings. Not done: live
+   before/after frame-time measurement (no screen-recording permission in
+   this sandbox) — the fix is architectural and unit-tested, not yet
+   confirmed against a stopwatch on a real large PDF; full-document search
+   extraction (`run_search`, see item 1 above) still runs synchronously on
+   the UI thread and is a plausible next target if search itself is still
+   slow after this.
+
+   Two regressions found live after this landed, both fixed in the same
+   round: (a) Cursor mode always started on page 0 regardless of scroll
+   position — unrelated to the rendering change itself, but surfaced
+   during the same live pass; `keyboard_page()` fell back to a fixed `0`
+   whenever the mouse hadn't clicked a page yet, instead of asking where
+   the view actually was (`page_near`, the same helper `progressive_render`
+   already uses for render priority). Fixed by reusing it there too — now
+   falls back to the page nearest the viewport center, only defaulting to
+   `0` before the very first frame has painted anything. (b) Switching
+   between *other* apps got janky while a big PDF was still catching up in
+   the background — traced to `progressive_render`'s "more nearby work"
+   repaint request being unconditional: previously each repaint also did
+   real synchronous rendering (self-throttling by how long that took); now
+   submission is nearly free, so this window could pump many more frames
+   per second while catching up, continuously demanding frames from the OS
+   compositor even while unfocused. Fixed with a `request_repaint` helper
+   that checks `ctx.input(|i| i.focused)`: immediate while focused, a
+   250ms `request_repaint_after` otherwise — background rendering still
+   finishes by the time the user returns, without competing for compositor
+   time while they're switching among other windows. Applied to both this
+   repaint and the notice-box countdown's. Neither regression had a unit
+   test catch it (focus/compositor behavior isn't exercised by
+   `egui::Context::default()` in tests, and the cursor-start position was
+   only ever checked indirectly) — live testing remains the only check for
+   both; `cargo test` (86 passing) and `cargo build`/`--release` stayed
+   clean throughout.
+
+   Three more issues found on the next live pass, after the above:
+   "still performance issues," "pages hangs when entering cursor mode,"
+   and "rendering also some kind of weird" — researched against how
+   other viewers actually do this (PDF.js's render queue, which always
+   promotes the most-visible page over submission order; Sioyek's
+   `pdf_renderer`; PDF.js/Chrome sizing their canvas as `scale *
+   devicePixelRatio` rather than a fixed resolution) and fixed to match:
+   - **Rendering "weird" (blurry).** `target_render_scale` computed a
+     resolution from zoom alone, with no accounting for the display's
+     own pixel density (`egui::Context::pixels_per_point()`, e.g. 2.0 on
+     a Retina/HiDPI screen — this app's own screen). The fixed constant
+     it replaced happened to still look fine at 100% zoom on a 2x
+     display purely by accident (it was generously oversized for *every*
+     zoom level, so the common case stayed comfortably above what 2x
+     density needed even though nothing accounted for density
+     explicitly) — once resolution started tracking zoom, the same gap
+     became visible at the most common zoom level, not just at extremes.
+     Fixed by multiplying by `pixels_per_point` directly, matching how
+     PDF.js/Chrome size their own canvas; renamed the old `RENDER_SCALE`
+     ceiling to `MAX_RENDER_SCALE`, now a generous safety bound rather
+     than the normal target.
+   - **Cursor mode hanging after a fast scroll/jump, and the underlying
+     slowness.** The render worker (new this round) used a plain FIFO
+     channel: queued jobs ran in *submission* order, so a fast scroll or
+     a page jump (`G`, a big `j`/`k` count) could leave the page actually
+     on screen stuck behind a backlog of now-irrelevant jobs for pages
+     scrolled past moments earlier — Cursor mode needs that page's text
+     already extracted, so it visibly "hung" waiting for its turn. Fixed
+     by replacing the channel with a shared priority queue
+     (`render_worker.rs`'s `SharedState`/`pick_next`): jobs are keyed by
+     `(tab, page)` in a map instead of ordered in a channel, `main.rs`
+     reports its current page every frame via `set_focus`, and the
+     worker always renders whichever queued job is nearest that live
+     focus — a stale request for a page scrolled away from simply loses
+     priority to whatever's actually on screen now, with no separate
+     cancellation step needed for that case. `progressive_render` also
+     no longer trickles submission across several frames (a leftover
+     FIFO-era caution): submitting is now a cheap map upsert, so every
+     candidate in the nearby window is registered the same frame it's
+     found, and the worker's priority picking — not submission order —
+     decides what renders first. Eviction additionally calls the new
+     `RenderWorker::cancel` to drop a not-yet-started request for a page
+     that just scrolled out of the keep radius.
+   `cargo test` (94 passing, including 4 new `pick_next` priority-rule
+   cases and a dedup-on-resubmit case) and `cargo build`/`--release`
+   stayed clean. Still not done: live confirmation on a real large PDF —
+   this sandbox has no display/screen-recording access, so all three
+   fixes are verified by their unit tests and by reasoning about the
+   traced mechanism, not by a stopwatch or a side-by-side look.
+
+   A fourth, bigger root cause found right after, from the user's own
+   486-page technical book (profiled directly, see `--profile <path>`
+   below): opening *this specific file* still froze for seconds,
+   independent of every fix above. Added a `--profile <path>` headless
+   CLI flag (`profile_document`) that times the exact steps this app
+   does per page with no display needed, to measure instead of guess —
+   it found `Viewer::load` itself (not `progressive_render`, not the
+   render worker) spending **1.5 seconds** synchronously opening every
+   one of the 486 pages just to read its size, before the window could
+   paint anything at all. That loop predates this round's render-worker
+   work entirely; moving rendering off the UI thread never touched it.
+   Fixed the same way as rendering: `Viewer::load` now reads only page
+   0's real size and uses it as every other page's placeholder (correct
+   immediately for a uniform-page-size document, which this one is —
+   confirmed by the profiler, every sampled page was identically
+   476x680pt); a new one-shot background thread
+   (`Viewer::measure_page_sizes`, `main.rs`'s `spawn_page_size_measurement`/
+   `apply_pending_page_sizes`) measures every page's real size in the
+   background and corrects any that differ once it finishes. Re-profiled
+   the same file after the fix: `Viewer::load` dropped from 1.5s to
+   **19.8ms**; the full 486-page measurement (now ~2.2s, off the UI
+   thread) no longer blocks anything. Per-page rendering for this
+   specific document is also inherently non-trivial (dense vector
+   diagrams at ~2190x3129px, 24-170ms/page measured) — now happening on
+   the background render worker instead of the UI thread, same as every
+   other document; not something to further optimize without evidence
+   it still matters after this. 3 new tests (`viewer.rs`'s
+   `page_size_tests`) cover the placeholder, the correction, and the
+   length-mismatch no-op. `cargo test` (97 passing) and `cargo build`/
+   `--release` clean. Confirmed against the user's real file via
+   `--profile`, not just a unit test — the one piece of this whole
+   performance effort actually measured against the reported-slow file
+   itself, not a synthetic fixture.
+   Follow-up on the same 486-page PDF: each raster at 100% zoom on a 2x
+   display is 2190×3129 RGBA pixels (~27 MB raw). The render window
+   previously queued and retained up to 81 pages near the middle of the
+   book: ~2.2 GB of raw pixels before upload copies, plus continuous
+   background PDFium work. The window is now the visible page ±3
+   (at most seven), queued pages outside it are canceled, and canceled
+   results cannot restore evicted textures. The worker wakes egui when
+   results arrive, rather than spinning repaints while rendering; the
+   UI uploads only one finished texture per frame. Tests: 99 pass;
+   release build clean. Memory figures are calculated from the profiled
+   bitmap dimensions, not measured process RSS; GUI frame timing still
+   needs a live display check.
+   Cursor-mode follow-up on pages 20→21 of the same PDF: page 20 renders
+   in 38 ms (39 text lines) and page 21 in 34 ms (41 lines) in the
+   headless profile. The cursor state, not unusual page content, was the
+   culprit: `active_page` and `page_cursor` persisted when leaving Cursor
+   mode, and the old line could be reused on the newly focused page.
+   Entry now selects the viewport's page and nearest line, only reuses
+   a cursor that belongs to that page and remains within its text, and
+   completes placement when a not-yet-rendered page arrives. Keyboard
+   motions also follow the viewport when the former page is offscreen.
+   Regression tests cover page changes, pending page completion, and
+   re-entry after scrolling within one page.
+   Zoom/tab follow-up: `progressive_render` previously picked a focus
+   page and evicted textures before the frame laid out its new zoom or
+   restored scroll offset. After moving result collection before layout
+   and scheduling/eviction after layout, zoom correction's discarded
+   intermediate pass no longer evicts from stale rectangles. A pending
+   low-resolution render is superseded when zoom demands more pixels;
+   its late result cannot replace a sharper texture. Each document tab
+   now gives egui's ScrollArea a distinct persistent ID, retaining its
+   own vertical/horizontal scroll offset through tab switches. Tests
+   cover independent tab offsets and stale low-resolution results.
+   Startup/maximized follow-up: release headless profile of the user's
+   PDF measured config ~1 ms, PDFium load 15 ms, document open 53 ms,
+   and `Viewer::load` 17 ms. The 486-page size scan still took 1.6 s
+   and previously started on the first UI frame, competing with nearby
+   page rendering for PDFium. It now begins only after the visible page
+   and its prefetched neighbors are ready. A forced maximized window was
+   tried, then removed because it conflicts with AeroSpace's window
+   management; native sizing is left to macOS/the window manager. The
+   default small centered 800×600 window was then replaced by a larger
+   1200×800 initial size without forcing maximized state.
+   This removes scan contention from first
+   paint; actual GPU/window startup latency remains unmeasured here.
+6. **Platform coverage** (explicitly last per the user). Windows/Linux
    PDFium binaries, smoke tests, and config-path verification — only
    macOS x86_64 has ever been exercised.
-6. **Packaging** (explicitly last, after basic functionality). Signing/
+7. **Packaging** (explicitly last, after basic functionality). Signing/
    notarization, an example config file documenting modifier-key names
    and platform differences, a genuine scanned/non-text fixture, and
    — new this round — a decision on how this app actually launches as

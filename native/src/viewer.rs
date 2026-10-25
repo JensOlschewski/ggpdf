@@ -31,6 +31,15 @@ pub struct RenderedPage {
     /// display-space scale factor from this instead of assuming every
     /// page shares one constant.
     pub render_scale: f32,
+    /// What `render_scale` would have been without the `max_texture_side`
+    /// clamp above — i.e. what was actually asked for. `main.rs`'s
+    /// `progressive_render` compares a fresh zoom-driven target against
+    /// *this*, not `render_scale`, to decide whether a page needs a
+    /// sharper re-render: comparing against the (possibly clamped)
+    /// `render_scale` instead would re-request the same clamped result
+    /// forever for an oversized page, since the clamp never lets
+    /// `render_scale` reach the target.
+    pub requested_scale: f32,
     /// Whether this texture already has the dark-mode color filter
     /// baked in (see `apply_dark_filter`). `render_page` re-rasterizes
     /// on a mismatch against the caller's current theme rather than
@@ -38,14 +47,94 @@ pub struct RenderedPage {
     pub dark: bool,
 }
 
-impl RenderedPage {
-    /// Stand-in for a page that failed to render, so the progressive
-    /// render budget can move on instead of retrying it every frame.
-    fn empty(ctx: &egui::Context, index: usize, render_scale: f32, dark: bool) -> RenderedPage {
-        let color_image = egui::ColorImage::new([1, 1], vec![egui::Color32::TRANSPARENT; 1]);
-        let texture = ctx.load_texture(format!("page-{index}-empty"), color_image, egui::TextureOptions::LINEAR);
-        RenderedPage { texture, chars: Vec::new(), lines: Vec::new(), render_scale, dark }
+/// The CPU-only half of rendering a page — rasterizing via PDFium,
+/// applying the dark filter, and extracting positioned text — with no
+/// `egui::Context` dependency, so it can run on `render_worker.rs`'s
+/// background thread. `into_rendered` does the remaining GPU-upload step
+/// (`egui::Context::load_texture`), which must stay on the thread that
+/// owns the `Context`.
+pub struct PreparedPage {
+    pub index: usize,
+    image: image::RgbaImage,
+    chars: Vec<PositionedChar>,
+    lines: Vec<Line>,
+    render_scale: f32,
+    requested_scale: f32,
+    dark: bool,
+}
+
+impl PreparedPage {
+    /// Readable before `into_rendered` consumes `self` — `main.rs`'s
+    /// `apply_render_result` needs these to decide whether this result
+    /// still matches the page's `pending` request (see that field's own
+    /// doc comment) before clearing it.
+    pub fn dark(&self) -> bool {
+        self.dark
     }
+
+    pub fn requested_scale(&self) -> f32 {
+        self.requested_scale
+    }
+
+    fn empty(index: usize, requested_scale: f32, dark: bool) -> PreparedPage {
+        PreparedPage {
+            index,
+            image: image::RgbaImage::new(1, 1),
+            chars: Vec::new(),
+            lines: Vec::new(),
+            render_scale: requested_scale,
+            requested_scale,
+            dark,
+        }
+    }
+
+    /// Uploads the already-decoded bitmap as a texture. Cheap relative
+    /// to `prepare_page` (no PDFium/image-filter work left, just a GPU
+    /// buffer copy) — safe to call on the UI thread once per result.
+    pub fn into_rendered(self, ctx: &egui::Context) -> RenderedPage {
+        let (w, h) = (self.image.width() as usize, self.image.height() as usize);
+        let color_image = egui::ColorImage::from_rgba_unmultiplied([w, h], self.image.as_raw());
+        let texture = ctx.load_texture(format!("page-{}", self.index), color_image, egui::TextureOptions::LINEAR);
+        RenderedPage {
+            texture,
+            chars: self.chars,
+            lines: self.lines,
+            render_scale: self.render_scale,
+            requested_scale: self.requested_scale,
+            dark: self.dark,
+        }
+    }
+}
+
+/// Rasterizes page `index` and extracts its text geometry — the part of
+/// `Viewer::render_page` with no `egui::Context` dependency, factored
+/// out so `render_worker.rs`'s background thread can call it directly.
+/// `requested_scale` is clamped down, per page, so neither dimension of
+/// the rasterized bitmap exceeds `max_texture_side` (see
+/// `RenderedPage::requested_scale`'s own doc comment for why the
+/// pre-clamp value is kept too).
+pub fn prepare_page(doc: &Document, index: usize, requested_scale: f32, max_texture_side: usize, dark: bool) -> PreparedPage {
+    let result = (|| -> Result<PreparedPage, DocumentError> {
+        let page = doc.page(index as u16)?;
+        let size = page.size();
+        let rotation_degrees = page.rotation_degrees();
+
+        let max_side = max_texture_side as f32;
+        let scale = requested_scale.min(max_side / size.width_pt.max(1.0)).min(max_side / size.height_pt.max(1.0));
+
+        let mut image = page.render(scale)?;
+        if dark {
+            apply_dark_filter(&mut image);
+        }
+
+        let raw_chars = page.raw_chars()?;
+        let chars = text::position_chars(&raw_chars, size, rotation_degrees, scale);
+        let lines = selection::group_into_lines(&chars);
+
+        Ok(PreparedPage { index, image, chars, lines, render_scale: scale, requested_scale, dark })
+    })();
+
+    result.unwrap_or_else(|_| PreparedPage::empty(index, requested_scale, dark))
 }
 
 /// Approximates the old app's CSS `filter: invert(0.9) hue-rotate(180deg)`
@@ -74,33 +163,85 @@ pub fn apply_dark_filter(image: &mut image::RgbaImage) {
 }
 
 pub struct PageView {
+    /// May briefly be a placeholder (page 0's size, copied to every
+    /// page) rather than this page's real size — see `Viewer::load`'s
+    /// doc comment. Corrected in place once `apply_measured_sizes` runs.
     pub size_pt: PageSize,
     /// `None` until `Viewer::render_page` has rasterized this page.
     pub rendered: Option<RenderedPage>,
+    /// `Some((requested_scale, dark))` while `main.rs`'s background
+    /// render worker has a job in flight for this page — set when the
+    /// job is submitted, cleared when its result is applied (see
+    /// `main.rs`'s `apply_render_result`), so `progressive_render`
+    /// doesn't submit the same page twice while waiting on the first
+    /// job.
+    pub pending: Option<(f32, bool)>,
 }
 
 /// Every page of one open document. `load()` populates sizes only;
 /// bitmaps/text geometry fill in progressively via `render_page()`.
 pub struct Viewer {
     pub pages: Vec<PageView>,
+    /// Start the full-document size scan only after nearby pages have
+    /// rendered. The scan reads hundreds of pages through the same PDFium
+    /// bindings as the renderer and otherwise competes with first paint.
+    pub sizes_requested: bool,
 }
 
 impl Viewer {
     /// Cheap: page sizes and rotation only, no PDFium rasterization — so
     /// opening even a long document is fast. Call `render_page` to
     /// actually decode a page's bitmap and text.
+    /// Reads only page 0's real size (needed immediately — it's the
+    /// first thing shown) and gives every other page that same size as
+    /// a placeholder, rather than reading every page's size up front.
+    /// `main.rs` measures the rest on a background thread (see
+    /// `measure_page_sizes`) and calls `apply_measured_sizes` once that
+    /// finishes, correcting any page whose placeholder was wrong.
+    ///
+    /// Profiled live on a 486-page technical book: the old version of
+    /// this function — a loop opening *every* page just to read its
+    /// `/MediaBox` — took 1.5 *seconds* of synchronous UI-thread time,
+    /// running before the very first frame could paint anything. That's
+    /// a direct, measured cause of a multi-second freeze on opening a
+    /// large document, entirely separate from — and upstream of —
+    /// `progressive_render`'s own background-worker rendering: a
+    /// document with 1,000 pages and a document with 10 pages cost
+    /// exactly the same to show *this* way (one page read), where they
+    /// didn't before.
     pub fn load(doc: &Document) -> Result<Viewer, DocumentError> {
-        let mut pages = Vec::with_capacity(doc.page_count() as usize);
-
-        for index in 0..doc.page_count() {
-            let page = doc.page(index)?;
-            pages.push(PageView {
-                size_pt: page.size(),
-                rendered: None,
-            });
+        let page_count = doc.page_count();
+        if page_count == 0 {
+            return Ok(Viewer { pages: Vec::new(), sizes_requested: false });
         }
+        let first_size = doc.page(0)?.size();
+        let pages = (0..page_count).map(|_| PageView { size_pt: first_size, rendered: None, pending: None }).collect();
+        Ok(Viewer { pages, sizes_requested: false })
+    }
 
-        Ok(Viewer { pages })
+    /// Reads every page's real size — the same per-page work the old
+    /// `load` did inline, kept available as its own function so
+    /// `main.rs` can run it on a background thread instead (see
+    /// `load`'s own doc comment for why that matters). Pure PDFium
+    /// reads, no `egui::Context` dependency, same shape as
+    /// `prepare_page`.
+    pub fn measure_page_sizes(doc: &Document) -> Result<Vec<PageSize>, DocumentError> {
+        (0..doc.page_count()).map(|index| doc.page(index).map(|p| p.size())).collect()
+    }
+
+    /// Overwrites every page's `size_pt` with a freshly measured value
+    /// — called once `measure_page_sizes` finishes. A no-op (not a
+    /// panic) if `sizes.len()` doesn't match `self.pages.len()`,
+    /// defensive against a measurement meant for a document that's
+    /// since changed shape somehow — shouldn't happen in practice,
+    /// since an already-open `PdfDocument`'s page count can't change.
+    pub fn apply_measured_sizes(&mut self, sizes: &[PageSize]) {
+        if sizes.len() != self.pages.len() {
+            return;
+        }
+        for (page, &size) in self.pages.iter_mut().zip(sizes) {
+            page.size_pt = size;
+        }
     }
 
     /// Index of the first page not rendered under the current theme, if
@@ -119,7 +260,7 @@ impl Viewer {
 
     /// Rasterizes and caches page `index`. No-op if already rendered
     /// under the requested `dark` theme. A render failure is recorded as
-    /// an empty page (see `RenderedPage::empty`) rather than left to
+    /// an empty page (see `PreparedPage::empty`) rather than left to
     /// retry forever (except across a `dark` toggle — see
     /// `next_unrendered`).
     ///
@@ -127,35 +268,73 @@ impl Viewer {
     /// dimension of the rasterized bitmap exceeds `max_texture_side` —
     /// without this, an unusually large/landscape page at a high zoom
     /// level could panic on texture upload (previously unchecked).
+    ///
+    /// Superseded in `main.rs`'s `progressive_render` by submitting a
+    /// `render_worker::RenderJob` and uploading the result via
+    /// `PreparedPage::into_rendered` instead — this synchronous,
+    /// UI-thread-blocking path is kept for tests, which don't need a
+    /// background thread for a single-page smoke check.
+    #[allow(dead_code)]
     pub fn render_page(&mut self, doc: &Document, index: usize, pixels_per_point: f32, max_texture_side: usize, dark: bool, ctx: &egui::Context) {
         if self.pages[index].rendered.as_ref().is_some_and(|r| r.dark == dark) {
             return;
         }
+        let prepared = prepare_page(doc, index, pixels_per_point, max_texture_side, dark);
+        self.pages[index].rendered = Some(prepared.into_rendered(ctx));
+    }
+}
 
-        let result = (|| -> Result<RenderedPage, DocumentError> {
-            let page = doc.page(index as u16)?;
-            let size = page.size();
-            let rotation_degrees = page.rotation_degrees();
+#[cfg(test)]
+mod page_size_tests {
+    use super::*;
+    use crate::document::test_library;
 
-            let max_side = max_texture_side as f32;
-            let scale = pixels_per_point.min(max_side / size.width_pt.max(1.0)).min(max_side / size.height_pt.max(1.0));
+    #[test]
+    fn load_uses_page_zeros_size_as_a_placeholder_for_every_page() {
+        let library = test_library();
+        let doc = library.open("assets/test-pdfs/two-column.pdf").expect("open doc");
+        let page_count = doc.page_count();
+        assert!(page_count > 1, "fixture should be multi-page, got {page_count}");
 
-            let mut image = page.render(scale)?;
-            if dark {
-                apply_dark_filter(&mut image);
-            }
-            let (w, h) = (image.width() as usize, image.height() as usize);
-            let color_image = egui::ColorImage::from_rgba_unmultiplied([w, h], image.as_raw());
-            let texture = ctx.load_texture(format!("page-{index}"), color_image, egui::TextureOptions::LINEAR);
+        let v = Viewer::load(&doc).expect("viewer load");
+        let page0 = doc.page(0).expect("page 0").size();
+        for page in &v.pages {
+            assert_eq!((page.size_pt.width_pt, page.size_pt.height_pt), (page0.width_pt, page0.height_pt), "every page should start out sized like page 0");
+        }
+    }
 
-            let raw_chars = page.raw_chars()?;
-            let chars = text::position_chars(&raw_chars, size, rotation_degrees, scale);
-            let lines = selection::group_into_lines(&chars);
+    #[test]
+    fn measure_page_sizes_and_apply_measured_sizes_correct_the_placeholder() {
+        let library = test_library();
+        let doc = library.open("assets/test-pdfs/two-column.pdf").expect("open doc");
+        let page_count = doc.page_count();
 
-            Ok(RenderedPage { texture, chars, lines, render_scale: scale, dark })
-        })();
+        let mut v = Viewer::load(&doc).expect("viewer load");
+        let real_sizes: Vec<PageSize> = (0..page_count).map(|i| doc.page(i).expect("page").size()).collect();
 
-        self.pages[index].rendered = Some(result.unwrap_or_else(|_| RenderedPage::empty(ctx, index, pixels_per_point, dark)));
+        let measured = Viewer::measure_page_sizes(&doc).expect("measure sizes");
+        assert_eq!(measured.len(), real_sizes.len());
+        for (m, real) in measured.iter().zip(&real_sizes) {
+            assert_eq!((m.width_pt, m.height_pt), (real.width_pt, real.height_pt));
+        }
+
+        v.apply_measured_sizes(&measured);
+        for (page, real) in v.pages.iter().zip(&real_sizes) {
+            assert_eq!((page.size_pt.width_pt, page.size_pt.height_pt), (real.width_pt, real.height_pt));
+        }
+    }
+
+    #[test]
+    fn apply_measured_sizes_is_a_noop_on_a_length_mismatch() {
+        let library = test_library();
+        let doc = library.open("assets/test-pdfs/letter.pdf").expect("open doc");
+        let mut v = Viewer::load(&doc).expect("viewer load");
+        let before: Vec<(f32, f32)> = v.pages.iter().map(|p| (p.size_pt.width_pt, p.size_pt.height_pt)).collect();
+
+        v.apply_measured_sizes(&[]);
+
+        let after: Vec<(f32, f32)> = v.pages.iter().map(|p| (p.size_pt.width_pt, p.size_pt.height_pt)).collect();
+        assert_eq!(before, after, "a mismatched measurement must not touch any page's size");
     }
 }
 

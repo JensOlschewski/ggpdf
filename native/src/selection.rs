@@ -16,6 +16,7 @@
 //! time characters reach this module).
 
 use crate::text::{PositionedChar, Rect};
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cursor {
@@ -294,24 +295,24 @@ fn word_motion(lines: &[Line], cursor: Cursor, motion: Motion, count: usize) -> 
 /// `is`/`ip` in `visual.js`'s terms. Returns the inclusive `(start, end)`
 /// bounds of the text object containing `cursor`, or `None` if the page
 /// has no text to select (only possible for `sentence`).
-pub fn text_object_paragraph(lines: &[Line], cursor: Cursor) -> (Cursor, Cursor) {
-    let starts_paragraph = |index: usize| -> bool {
-        if index == 0 {
-            return true;
-        }
-        let (Some(prev), Some(cur)) = (lines[index - 1].rect(), lines[index].rect()) else {
-            return true;
-        };
-        let height = prev.bottom - prev.top;
-        cur.top < prev.top || cur.top - prev.bottom > height * 0.6 || cur.left - prev.left > height * 0.6
+fn starts_paragraph(lines: &[Line], index: usize) -> bool {
+    if index == 0 {
+        return true;
+    }
+    let (Some(prev), Some(cur)) = (lines[index - 1].rect(), lines[index].rect()) else {
+        return true;
     };
+    let height = prev.bottom - prev.top;
+    cur.top < prev.top || cur.top - prev.bottom > height * 0.6 || cur.left - prev.left > height * 0.6
+}
 
+pub fn text_object_paragraph(lines: &[Line], cursor: Cursor) -> (Cursor, Cursor) {
     let mut first = cursor.line;
     let mut last = cursor.line;
-    while first > 0 && !starts_paragraph(first) {
+    while first > 0 && !starts_paragraph(lines, first) {
         first -= 1;
     }
-    while last + 1 < lines.len() && !starts_paragraph(last + 1) {
+    while last + 1 < lines.len() && !starts_paragraph(lines, last + 1) {
         last += 1;
     }
     let last_char = lines[last].chars.len().saturating_sub(1);
@@ -325,40 +326,32 @@ struct SentenceEntry {
     is_whitespace: bool,
 }
 
-/// Splits `chars` into sentence spans `[start, end)` using a punctuation
-/// + trailing-whitespace heuristic (`.`/`!`/`?`, optionally followed by a
-/// closing quote/bracket, then whitespace or end of text). This is not
-/// full UAX #29 sentence segmentation (no abbreviation handling, e.g.
-/// "Dr. Smith" breaks after "Dr.") — a reasonable approximation for
-/// prose, not a guarantee; `visual.js` uses the browser's
-/// `Intl.Segmenter` instead, which Rust has no equivalent built in for.
-fn split_sentences(chars: &[char]) -> Vec<(usize, usize)> {
-    let mut bounds = Vec::new();
-    let mut start = 0usize;
-    let mut i = 0usize;
-    while i < chars.len() {
-        if matches!(chars[i], '.' | '!' | '?') {
-            let mut j = i + 1;
-            while j < chars.len() && matches!(chars[j], '"' | '\'' | ')' | ']') {
-                j += 1;
-            }
-            if j >= chars.len() || chars[j].is_whitespace() {
-                while j < chars.len() && chars[j].is_whitespace() {
-                    j += 1;
-                }
-                bounds.push((start, j));
-                start = j;
-                i = j;
+/// UAX #29 sentence boundaries, plus common honorifics that Unicode's
+/// locale-independent rules deliberately split (e.g. "Dr. Smith").
+/// Offsets are Unicode scalar indices, not UTF-8 bytes: `SentenceEntry`
+/// and the PDF character cursor use that same index space.
+fn split_sentences(text: &str) -> Vec<(usize, usize)> {
+    let mut bounds: Vec<(usize, usize)> = Vec::new();
+    let mut char_end = 0;
+    let mut byte_end = 0;
+    for segment in text.split_sentence_bounds() {
+        let byte_start = byte_end;
+        byte_end += segment.len();
+        let char_start = char_end;
+        char_end += segment.chars().count();
+        if let Some((_, end)) = bounds.last_mut() {
+            let previous = text[..byte_start].trim_end();
+            let word = previous.trim_end_matches('.').rsplit(|c: char| !c.is_alphabetic()).next().unwrap_or("");
+            if previous.ends_with('.')
+                && !text[..byte_start].trim_end_matches(|c: char| c.is_whitespace() && c != '\u{2029}').ends_with('\u{2029}')
+                && !segment.starts_with('\u{2029}')
+                && ["mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st"].iter().any(|title| word.eq_ignore_ascii_case(title))
+            {
+                *end = char_end;
                 continue;
             }
         }
-        i += 1;
-    }
-    if start < chars.len() {
-        bounds.push((start, chars.len()));
-    }
-    if bounds.is_empty() && !chars.is_empty() {
-        bounds.push((0, chars.len()));
+        bounds.push((char_start, char_end));
     }
     bounds
 }
@@ -371,7 +364,9 @@ pub fn text_object_sentence(lines: &[Line], cursor: Cursor) -> Option<(Cursor, C
 
     for (li, line) in lines.iter().enumerate() {
         if li != 0 {
-            full_text.push(' ');
+            // Unicode's paragraph separator forces a sentence boundary;
+            // ordinary wrapped visual lines must continue as prose.
+            full_text.push(if starts_paragraph(lines, li) { '\u{2029}' } else { ' ' });
             text_len += 1;
         }
         for (ci, c) in line.chars.iter().enumerate() {
@@ -389,8 +384,7 @@ pub fn text_object_sentence(lines: &[Line], cursor: Cursor) -> Option<(Cursor, C
         }
     }
 
-    let chars: Vec<char> = full_text.chars().collect();
-    let segments = split_sentences(&chars);
+    let segments = split_sentences(&full_text);
     let &(seg_start, seg_end) = segments
         .iter()
         .find(|&&(s, e)| cursor_offset >= s && cursor_offset < e)
@@ -452,6 +446,46 @@ mod tests {
 
         let (start, end) = text_object_sentence(&lines, Cursor { line: 1, character: 18 }).unwrap();
         assert_eq!(selected_text(&lines, start, end), "Second one.");
+    }
+
+    #[test]
+    fn sentence_text_object_keeps_titles_with_their_names() {
+        let lines = lines_from(&["Dr. Smith arrived. Next sentence."], &[]);
+        let (start, end) = text_object_sentence(&lines, Cursor { line: 0, character: 1 }).unwrap();
+        assert_eq!(selected_text(&lines, start, end), "Dr. Smith arrived.");
+        let (start, end) = text_object_sentence(&lines, Cursor { line: 0, character: 5 }).unwrap();
+        assert_eq!(selected_text(&lines, start, end), "Dr. Smith arrived.");
+        let (start, end) = text_object_sentence(&lines, Cursor { line: 0, character: 20 }).unwrap();
+        assert_eq!(selected_text(&lines, start, end), "Next sentence.");
+    }
+
+    #[test]
+    fn unicode_sentence_bounds_keep_character_offsets() {
+        let text = "你好。🙂 Dr. Smith left! Voilà?";
+        let bounds = split_sentences(text);
+        let chars: Vec<char> = text.chars().collect();
+        let sentences: Vec<String> = bounds.iter().map(|&(start, end)| chars[start..end].iter().collect()).collect();
+        assert_eq!(sentences.concat(), text);
+        assert_eq!(sentences, ["你好。", "🙂 Dr. Smith left! ", "Voilà?"]);
+        let lines = lines_from(&[text], &[]);
+        let (start, end) = text_object_sentence(&lines, Cursor { line: 0, character: 8 }).unwrap();
+        assert_eq!(selected_text(&lines, start, end), "🙂 Dr. Smith left!");
+    }
+
+    #[test]
+    fn sentence_text_object_stops_at_paragraph_break_without_punctuation() {
+        let lines = lines_from(&["First paragraph", "continued", "Another paragraph"], &[2]);
+        let (start, end) = text_object_sentence(&lines, Cursor { line: 0, character: 1 }).unwrap();
+        assert_eq!(selected_text(&lines, start, end), "First paragraph\ncontinued");
+        let (start, end) = text_object_sentence(&lines, Cursor { line: 2, character: 1 }).unwrap();
+        assert_eq!(selected_text(&lines, start, end), "Another paragraph");
+    }
+
+    #[test]
+    fn paragraph_break_is_not_merged_after_a_title() {
+        let lines = lines_from(&["I met Dr.", "A new paragraph."], &[1]);
+        let (start, end) = text_object_sentence(&lines, Cursor { line: 1, character: 1 }).unwrap();
+        assert_eq!(selected_text(&lines, start, end), "A new paragraph.");
     }
 
     #[test]

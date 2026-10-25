@@ -63,6 +63,14 @@ pub fn pages_to_render(current_page: usize, page_count: usize, is_unrendered: im
     out
 }
 
+/// Only schedule pages close enough to become visible on the next scroll.
+/// Unlike a budget over the whole document, this does not fill unused
+/// slots with distant pages when the nearby window is already cached.
+pub fn nearby_pages_to_render(current_page: usize, page_count: usize, radius: usize, is_unrendered: impl Fn(usize) -> bool) -> Vec<usize> {
+    let width = radius.saturating_mul(2).saturating_add(1);
+    pages_to_render(current_page, page_count, |i| i.abs_diff(current_page) <= radius && is_unrendered(i), width)
+}
+
 /// Indices of already-rendered pages more than `keep_radius` pages away
 /// from `current_page` (either direction) — `main.rs` frees their GPU
 /// texture (sets `rendered = None`, to be lazily re-rasterized if
@@ -131,5 +139,12 @@ mod tests {
     fn evict_ignores_pages_that_were_never_rendered() {
         let rendered = vec![false; 5];
         assert_eq!(pages_to_evict(0, 5, |i| rendered[i], 0), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn nearby_window_does_not_schedule_distant_pages_to_fill_budget() {
+        assert_eq!(nearby_pages_to_render(200, 486, 3, |_| true), vec![200, 199, 201, 198, 202, 197, 203]);
+        assert!(nearby_pages_to_render(200, 486, 3, |i| i == 210).is_empty());
+        assert_eq!(nearby_pages_to_render(0, 486, 3, |_| true), vec![0, 1, 2, 3]);
     }
 }

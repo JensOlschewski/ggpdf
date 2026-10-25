@@ -7,10 +7,18 @@
 
 use crate::document::{Document, DocumentError, PdfLibrary};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub struct OpenDocument<'lib> {
     pub path: PathBuf,
-    pub document: Document<'lib>,
+    /// `Arc`, not a plain `Document`, so `main.rs`'s background render
+    /// worker (see `render_worker.rs`) can hold its own cloned handle to
+    /// the same open document across threads without needing the UI
+    /// thread to keep it alive or to serialize access itself — PDFium
+    /// calls are already internally mutex-guarded (the `pdfium-render`
+    /// `thread_safe` feature, on by default), so a second thread reading
+    /// the same `Document` concurrently is safe, just sequenced.
+    pub document: Arc<Document<'lib>>,
 }
 
 /// Open documents plus which one is active. Page position within a
@@ -34,7 +42,7 @@ impl<'lib> App<'lib> {
     /// Opens `path` as a new tab and makes it active.
     pub fn open(&mut self, path: impl Into<PathBuf>) -> Result<(), DocumentError> {
         let path = path.into();
-        let document = self.library.open(&path)?;
+        let document = Arc::new(self.library.open(&path)?);
         self.docs.push(OpenDocument { path, document });
         self.active = self.docs.len() - 1;
         Ok(())

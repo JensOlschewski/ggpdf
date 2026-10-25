@@ -10,30 +10,182 @@ mod config;
 mod document;
 mod input;
 mod render;
+mod render_worker;
 mod selection;
 mod text;
 mod viewer;
 
 use document::PdfLibrary;
 use eframe::egui;
+use render_worker::RenderWorker;
 use std::env;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use viewer::Viewer;
+
+/// Resources shipped beside the executable in a macOS `.app`. Development
+/// builds keep using paths relative to the current working directory.
+fn bundled_resources() -> Option<PathBuf> {
+    let executable = env::current_exe().ok()?;
+    let macos = executable.parent()?;
+    let contents = macos.parent()?;
+    (macos.file_name()? == "MacOS" && contents.file_name()? == "Contents")
+        .then(|| contents.join("Resources"))
+}
 
 /// Pixels per PDF point at 100% zoom. 2.0 == 144 DPI (72 * 2).
 const SCALE: f32 = 2.0;
 
-/// Fixed resolution pages are rendered (and PDFium-decoded) at,
-/// independent of the current *display* zoom (`SpikeApp::zoom`). Picked
-/// to equal the top of `zoom`'s clamp range (`SCALE * MAX_ZOOM_FACTOR`),
-/// so the sharpest zoom level is pixel-for-pixel crisp and every lower
-/// zoom level is a cheap downscale of the same texture — zooming no
-/// longer re-renders or re-decodes anything (found live: "zoom looks
-/// laggy", because the old code re-ran `Viewer::load`, re-rendering and
-/// re-uploading *every page's* texture, on every zoom keypress).
-const RENDER_SCALE: f32 = SCALE * MAX_ZOOM_FACTOR;
 /// Matches `keys.js`'s `ZOOM_LEVELS` bounds (0.5 to 3.0).
 const MIN_ZOOM_FACTOR: f32 = 0.5;
 const MAX_ZOOM_FACTOR: f32 = 3.0;
+/// How far above the exact device-pixel-crisp resolution a page is
+/// rendered, so one `ZOOM_LEVELS` step still reuses the current texture
+/// (a cheap GPU upscale) instead of immediately re-rendering. Stops are
+/// ~10-20% apart near 100%, so 1.15 covers roughly one step; the next
+/// step re-renders, which is fine now that rendering runs on
+/// `render_worker.rs`'s background thread instead of blocking a frame.
+const RENDER_HEADROOM: f32 = 1.15;
+/// Safety ceiling on rendered resolution, independent of zoom/DPI, so a
+/// pathological combination (maximum PDF zoom on a very high-density
+/// display) can't allocate an unreasonably large bitmap before
+/// `viewer::prepare_page`'s own per-page `max_texture_side` clamp even
+/// gets a chance to run. Generous on purpose — `MAX_ZOOM_FACTOR`'s zoom
+/// ceiling times a 2x device pixel ratio times `RENDER_HEADROOM`, with a
+/// little extra margin for a 3x display.
+const MAX_RENDER_SCALE: f32 = SCALE * MAX_ZOOM_FACTOR * 3.0 * RENDER_HEADROOM;
+
+/// The pixels-per-point a page should be rendered at for display zoom
+/// `zoom` on a display reporting `pixels_per_point` (`egui::Context::
+/// pixels_per_point`, 2.0 on a typical Retina/HiDPI display) — the exact
+/// resolution needed for that page to look pixel-for-pixel crisp on
+/// *this* screen at *this* zoom, not a fixed constant picked without
+/// knowing the display. Matches how PDF.js and Chrome's own PDF viewer
+/// size their canvas: `scale * devicePixelRatio`, re-rendering (cheaply,
+/// asynchronously — see `render_worker.rs`) when either changes, rather
+/// than pre-rendering extra resolution "just in case" to avoid that.
+///
+/// A previous version of this function ignored `pixels_per_point`
+/// entirely and instead pre-rendered every page at a single fixed high
+/// scale regardless of zoom, reasoning that re-rendering on zoom was too
+/// slow before rendering moved to a background thread. That version
+/// happened to look fine at exactly 100% zoom on a 2x-density display
+/// (its fixed scale, chosen before this function existed, was generously
+/// above what 100%-zoom-at-2x needed) but was quietly under-resolved —
+/// blurry — at *every* zoom level on a 3x display, and (found live,
+/// described as "rendering looks weird") became visibly blurry even at
+/// 100% zoom once a zoom-proportional headroom factor replaced that
+/// fixed scale without also accounting for display density. Fixed by
+/// multiplying by `pixels_per_point` directly instead of assuming it.
+fn target_render_scale(zoom: f32, pixels_per_point: f32) -> f32 {
+    (zoom * pixels_per_point * RENDER_HEADROOM).min(MAX_RENDER_SCALE)
+}
+
+/// Asks for another frame, same as `ctx.request_repaint()`, except
+/// while this window isn't focused: then it asks again only after a
+/// short delay instead of immediately, so background work (filling in
+/// pages, a notice-box countdown) still completes without this window
+/// continuously demanding frames from the OS compositor while some
+/// *other* app has focus — see `progressive_render`'s call site for the
+/// live symptom this fixes.
+fn request_repaint(ctx: &egui::Context) {
+    if ctx.input(|i| i.focused) {
+        ctx.request_repaint();
+    } else {
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
+}
+
+/// Whether page `i` needs a fresh render job submitted, given its
+/// current `rendered` state (`requested_scale`, `dark`) and any
+/// in-flight `pending` job, against the live `target_scale`/`dark`.
+/// Pulled out of `progressive_render`'s submission loop so this
+/// decision — the one piece of the worker integration most likely to
+/// regress into either starving a page or looping forever — has its own
+/// direct unit tests rather than only being exercised indirectly through
+/// a live `egui::Context`.
+///
+/// Compares against `requested_scale`, not the possibly-clamped
+/// `render_scale` a page's bitmap actually ended up at (see
+/// `viewer::RenderedPage::requested_scale`'s own doc comment): comparing
+/// against the clamped value would re-request the same clamped result
+/// forever for an oversized page at a high zoom, since a clamped render
+/// can never reach `target_scale` no matter how many times it's
+/// re-requested.
+fn page_needs_render(rendered: Option<(f32, bool)>, pending: Option<(f32, bool)>, target_scale: f32, dark: bool) -> bool {
+    if pending.is_some_and(|(pending_scale, pending_dark)| pending_dark == dark && pending_scale + 0.01 >= target_scale) {
+        return false;
+    }
+    match rendered {
+        None => true,
+        Some((requested_scale, rendered_dark)) => rendered_dark != dark || target_scale > requested_scale + 0.01,
+    }
+}
+
+#[cfg(test)]
+mod render_scale_tests {
+    use super::*;
+
+    #[test]
+    fn target_render_scale_multiplies_by_device_pixel_ratio_and_headroom() {
+        // 2x device pixel ratio (a typical Retina/HiDPI display).
+        assert_eq!(target_render_scale(SCALE, 2.0), SCALE * 2.0 * RENDER_HEADROOM);
+        // 1x (a plain display) needs proportionally less.
+        assert_eq!(target_render_scale(SCALE, 1.0), SCALE * RENDER_HEADROOM);
+    }
+
+    #[test]
+    fn target_render_scale_caps_at_the_safety_ceiling() {
+        assert_eq!(target_render_scale(MAX_RENDER_SCALE, 1.0), MAX_RENDER_SCALE, "must not exceed the ceiling even with headroom applied");
+        assert_eq!(target_render_scale(MAX_RENDER_SCALE * 10.0, 4.0), MAX_RENDER_SCALE);
+    }
+
+    #[test]
+    fn unrendered_or_wrong_theme_pages_need_a_render() {
+        assert!(page_needs_render(None, None, 3.0, false), "never rendered");
+        assert!(page_needs_render(Some((3.0, true)), None, 3.0, false), "rendered dark, now wants light");
+    }
+
+    #[test]
+    fn a_page_rendered_at_or_above_target_scale_does_not_need_rerendering() {
+        assert!(!page_needs_render(Some((3.0, false)), None, 3.0, false), "exactly at target");
+        assert!(!page_needs_render(Some((5.0, false)), None, 3.0, false), "zoomed back out — reuse the higher-res texture");
+    }
+
+    #[test]
+    fn zooming_in_past_the_last_requested_scale_needs_a_rerender() {
+        assert!(page_needs_render(Some((2.0, false)), None, 3.0, false));
+    }
+
+    #[test]
+    fn a_page_clamped_below_the_target_does_not_loop_forever() {
+        // An oversized page requested at scale 3.0 but clamped down to
+        // 1.0 by `max_texture_side`: `rendered` reports the clamped
+        // *delivered* resolution is irrelevant here because this
+        // function is given `requested_scale` (3.0), not the clamped
+        // one — so as long as the target hasn't grown past what was
+        // already requested, this must say "no" even though the texture
+        // itself is objectively lower-resolution than target_scale.
+        assert!(!page_needs_render(Some((3.0, false)), None, 3.0, false));
+    }
+
+    #[test]
+    fn an_in_flight_job_for_the_same_theme_blocks_resubmission() {
+        assert!(!page_needs_render(None, Some((3.0, false)), 3.0, false));
+        assert!(!page_needs_render(Some((2.0, false)), Some((3.0, false)), 3.0, false), "already requested the higher scale, don't duplicate");
+    }
+
+    #[test]
+    fn zooming_past_pending_resolution_supersedes_the_old_request() {
+        assert!(page_needs_render(Some((2.0, false)), Some((2.5, false)), 3.0, false));
+        assert!(page_needs_render(None, Some((2.5, false)), 3.0, false));
+    }
+
+    #[test]
+    fn an_in_flight_job_for_the_other_theme_does_not_block_a_theme_toggle() {
+        assert!(page_needs_render(Some((3.0, true)), Some((3.0, true)), 3.0, false), "dark job in flight, but we now want light");
+    }
+}
 /// Match keys.js's zoom stops. Small steps near 100% avoid the large
 /// 20% jump the native viewer previously made on every keypress.
 const ZOOM_LEVELS: &[f32] = &[
@@ -115,9 +267,10 @@ mod tab_cache_tests {
         let ctx = egui::Context::default();
 
         app.switch_to_active_tab(&ctx);
-        // `SCALE`, not `progressive_render`'s `RENDER_SCALE`, to keep the
-        // rasterized texture within `egui::Context::default()`'s texture
-        // size limit — unrelated to what this test is pinning down.
+        // `SCALE`, not `progressive_render`'s zoom-driven target scale,
+        // to keep the rasterized texture within `egui::Context::
+        // default()`'s texture size limit — unrelated to what this test
+        // is pinning down.
         let doc = library.open(&paths[0]).expect("open doc for rendering");
         app.viewer.as_mut().unwrap().render_page(&doc, 0, SCALE, 2048, false, &ctx);
         let tab0_rendered = app.viewer.as_ref().unwrap().pages.iter().filter(|p| p.rendered.is_some()).count();
@@ -277,6 +430,38 @@ fn parse_hex_color(s: &str, fallback: egui::Color32) -> egui::Color32 {
     }
 }
 
+fn is_pdf_path(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+}
+
+#[cfg(test)]
+mod open_file_tests {
+    use super::*;
+
+    #[test]
+    fn pdf_extension_is_case_insensitive() {
+        assert!(is_pdf_path(Path::new("/somewhere/document.PDF")));
+        assert!(!is_pdf_path(Path::new("/somewhere/document.txt")));
+        assert!(!is_pdf_path(Path::new("/somewhere/folder")));
+    }
+
+    #[test]
+    fn dropped_paths_open_tabs_without_adding_failed_files() {
+        let library = document::test_library();
+        let mut viewer = SpikeApp::new(library, config::Config::default(), &["assets/test-pdfs/letter.pdf".to_string()]);
+        let ctx = egui::Context::default();
+        viewer.open_pdf_paths([
+            PathBuf::from("assets/test-pdfs/rotated.pdf"),
+            PathBuf::from("assets/test-pdfs/missing.pdf"),
+            PathBuf::from("assets/test-pdfs/no-text.pdf"),
+            PathBuf::from("assets/test-pdfs/not-a-pdf.txt"),
+        ], &ctx);
+        assert_eq!(viewer.app.tab_count(), 3);
+        assert_eq!(viewer.app.active_index(), 2);
+        assert_eq!(viewer.app.tab_label(2), Some("no-text.pdf"));
+    }
+}
+
 struct SpikeApp {
     app: app::App<'static>,
     cfg: config::Config,
@@ -358,6 +543,18 @@ struct SpikeApp {
     /// drawn more prominently than the others. `None` if nothing has
     /// been searched yet, or the last search found nothing.
     search_current: Option<usize>,
+    /// Background render thread (see `render_worker.rs`); `progressive_render`
+    /// submits jobs to it and drains finished results instead of calling
+    /// `Viewer::render_page` synchronously, keeping PDFium rasterization
+    /// and text extraction off the UI thread.
+    render_worker: RenderWorker,
+    /// `(tab, receiver)` for every tab whose real per-page sizes are
+    /// still being measured on a background thread (see `load_viewer`
+    /// and `viewer::Viewer::measure_page_sizes`) — a `Vec`, not a single
+    /// slot, because opening a second large document while the first
+    /// one's measurement is still running must not lose track of it.
+    /// Drained every frame by `apply_pending_page_sizes`.
+    pending_sizes: Vec<(usize, std::sync::mpsc::Receiver<Vec<document::PageSize>>)>,
 }
 
 impl SpikeApp {
@@ -374,8 +571,12 @@ impl SpikeApp {
     /// startup.
     fn new(library: &'static PdfLibrary, cfg: config::Config, initial_paths: &[String]) -> Self {
         let mut doc_app = app::App::new(library);
+        let fallback;
         let paths: Vec<&str> = if initial_paths.is_empty() {
-            vec!["assets/test-pdfs/letter.pdf"]
+            fallback = bundled_resources()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("assets/test-pdfs/letter.pdf");
+            vec![fallback.to_str().expect("bundle resource path is UTF-8")]
         } else {
             initial_paths.iter().map(String::as_str).collect()
         };
@@ -424,6 +625,8 @@ impl SpikeApp {
             search_direction: SearchDirection::Forward,
             search_matches: Vec::new(),
             search_current: None,
+            render_worker: RenderWorker::spawn(),
+            pending_sizes: Vec::new(),
         }
     }
 
@@ -435,19 +638,98 @@ impl SpikeApp {
         self.notice_until = ctx.input(|i| i.time) + 3.0;
     }
 
+    /// Both the picker and OS drag-and-drop use the same open path. The
+    /// document layer only changes tabs after PDFium has opened the file.
+    fn open_pdf_paths(&mut self, paths: impl IntoIterator<Item = PathBuf>, ctx: &egui::Context) {
+        for path in paths {
+            if !is_pdf_path(&path) {
+                self.notify(ctx, format!("Not a PDF: {}", path.display()));
+                continue;
+            }
+            match self.app.open(&path) {
+                Ok(()) => {
+                    self.dispatcher.reset();
+                    self.pending_scroll = Some(egui::vec2(0.0, SCROLL_MAX));
+                }
+                Err(e) => self.notify(ctx, format!("Cannot open {}: {e}", path.display())),
+            }
+        }
+    }
+
     /// Applies the effect of a resolved `Action`. Scroll/close/mode
     /// transitions are real; motions and text objects that need a
     /// keyboard cursor model (`selection.rs`, not built yet) report
     /// themselves as not implemented instead of silently doing nothing.
     /// `(page index, lines)` the keyboard cursor applies to: the mouse's
-    /// `active_page` if one was clicked, else page 0 of the current
-    /// viewer. `None` if nothing is loaded.
+    /// `active_page` if one was clicked, else whichever page is
+    /// currently nearest the viewport center (see `page_near`) — found
+    /// live: entering Cursor mode after only scrolling (no click yet)
+    /// always planted the cursor on page 0, regardless of how far the
+    /// user had scrolled, because this previously fell back to a fixed
+    /// `0` instead of asking where the view actually is. Falls back to
+    /// `0` itself only before the first frame has painted anything (so
+    /// `page_near` has nothing to go on yet).
     fn keyboard_page(&self) -> Option<usize> {
         let viewer = self.viewer.as_ref()?;
         if viewer.pages.is_empty() {
             return None;
         }
-        Some(self.active_page.unwrap_or(0).min(viewer.pages.len() - 1))
+        let focused = self.page_near(self.viewport_rect.center()).map(|(p, _)| p);
+        // Once the old cursor's page scrolls out of view, motions must
+        // follow the viewport rather than remain pinned to that page.
+        let active_visible = self.active_page.filter(|&p| self.page_rects.get(p).is_some_and(|r| r.intersects(self.viewport_rect)));
+        let page = active_visible.or(focused).unwrap_or(0);
+        Some(page.min(viewer.pages.len() - 1))
+    }
+
+    /// A cursor position belongs to its page. Reusing its line number
+    /// after a scroll to another page can index beyond that page's lines.
+    fn cursor_for_page(&self, page_idx: usize) -> selection::Cursor {
+        let lines = self.viewer.as_ref().and_then(|v| Self::page_lines(v, page_idx));
+        self.page_cursor
+            .filter(|_| self.active_page == Some(page_idx))
+            .filter(|cursor| lines.and_then(|l| l.get(cursor.line)).is_some_and(|line| cursor.character < line.chars.len()))
+            .unwrap_or_else(|| self.initial_cursor_for_page(page_idx))
+    }
+
+    /// Where the keyboard cursor should appear in `page_idx` the first
+    /// time a keyboard mode is entered this session (`page_cursor` still
+    /// `None`) — the line nearest the viewport's current vertical
+    /// center, not always line 0. Found live: `keyboard_page` picking
+    /// the right *page* to land on wasn't enough on its own — every
+    /// caller still hardcoded line 0/character 0 as `page_cursor`'s
+    /// fallback, so the cursor landed at the top of that page even when
+    /// the user had scrolled to, say, the middle of a long page (that
+    /// page's own top wasn't even on screen). Falls back to line 0 if
+    /// the page isn't rendered yet, has no lines, or `page_rects` has no
+    /// entry for it yet (nothing painted this run).
+    fn initial_cursor_for_page(&self, page_idx: usize) -> selection::Cursor {
+        let fallback = selection::Cursor { line: 0, character: 0 };
+        let Some(page) = self.viewer.as_ref().and_then(|v| v.pages.get(page_idx)).and_then(|p| p.rendered.as_ref()) else {
+            return fallback;
+        };
+        if page.lines.is_empty() {
+            return fallback;
+        }
+        let Some(&rect) = self.page_rects.get(page_idx) else {
+            return fallback;
+        };
+        // Same page-local, render-scale-space conversion `char_at_pos`
+        // uses for mouse clicks, just for the viewport's center y
+        // instead of a pointer position.
+        let inv_scale = page.render_scale / self.zoom;
+        let focus_render_y = (self.viewport_rect.center().y - rect.min.y) * inv_scale;
+        let line = page
+            .lines
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                let distance = |l: &selection::Line| l.rect().map_or(f32::MAX, |r| (focus_render_y - focus_render_y.clamp(r.top, r.bottom)).abs());
+                distance(a).total_cmp(&distance(b))
+            })
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        selection::Cursor { line, character: 0 }
     }
 
     /// Converts a `selection::Cursor` (line, character) into a flat index
@@ -520,7 +802,7 @@ impl SpikeApp {
             self.status = "page has no extractable text".to_string();
             return;
         }
-        let cursor = self.page_cursor.unwrap_or(selection::Cursor { line: 0, character: 0 });
+        let cursor = self.cursor_for_page(page_idx);
 
         let (page_idx, cursor) = if matches!(motion, selection::Motion::Up | selection::Motion::Down) {
             self.move_vertical_cross_page(page_idx, cursor, motion, count)
@@ -657,18 +939,30 @@ impl SpikeApp {
                 // any mark — this action also fires for "v"/"V" toggle-off
                 // from Visual/VisualLine mode (config.rs binds those to
                 // CursorMode), which should deselect.
+                let from_visual = self.anchor_idx.is_some();
                 self.anchor_idx = None;
                 // Show page/line/char immediately on entry, not just
                 // after the first motion — otherwise "c" alone looks like
                 // it did nothing (found live: "cursor mode enter works
                 // but nothing else").
-                if let Some(page_idx) = self.keyboard_page() {
+                if let Some(page_idx) = self.page_near(self.viewport_rect.center()).map(|(p, _)| p).or_else(|| self.keyboard_page()) {
+                    if !from_visual {
+                        // A fresh entry starts where the reader is now,
+                        // even if the previous cursor was on this page.
+                        self.page_cursor = None;
+                    }
+                    self.active_page = Some(page_idx);
+                    self.cursor_idx = None;
                     if let Some(lines) = Self::page_lines(self.viewer.as_ref().unwrap(), page_idx).filter(|l| !l.is_empty()) {
-                        let cursor = self.page_cursor.unwrap_or(selection::Cursor { line: 0, character: 0 });
+                        // Enter at the reading position even when an old
+                        // cursor remains on a different page.
+                        let cursor = self.cursor_for_page(page_idx);
                         self.page_cursor = Some(cursor);
                         self.active_page = Some(page_idx);
                         self.cursor_idx = Some(Self::flat_index(lines, cursor));
                         self.update_cursor_status(page_idx, cursor);
+                    } else {
+                        self.status = "page not rendered yet".to_string();
                     }
                 }
             }
@@ -691,7 +985,7 @@ impl SpikeApp {
                 if self.anchor_idx.is_none() {
                     if let Some(page_idx) = self.keyboard_page() {
                         if let Some(lines) = Self::page_lines(self.viewer.as_ref().unwrap(), page_idx).filter(|l| !l.is_empty()) {
-                            let cursor = self.page_cursor.unwrap_or(selection::Cursor { line: 0, character: 0 });
+                            let cursor = self.cursor_for_page(page_idx);
                             self.page_cursor = Some(cursor);
                             self.active_page = Some(page_idx);
                             let idx = Self::flat_index(lines, cursor);
@@ -721,7 +1015,7 @@ impl SpikeApp {
             CopySentence => {
                 if let Some(page_idx) = self.keyboard_page() {
                     if let Some(lines) = Self::page_lines(self.viewer.as_ref().unwrap(), page_idx) {
-                        let cursor = self.page_cursor.unwrap_or(selection::Cursor { line: 0, character: 0 });
+                        let cursor = self.cursor_for_page(page_idx);
                         let bounds = selection::text_object_sentence(lines, cursor);
                         self.apply_text_object(bounds);
                         self.copy_selection(ctx);
@@ -731,7 +1025,7 @@ impl SpikeApp {
             CopyParagraph => {
                 if let Some(page_idx) = self.keyboard_page() {
                     if let Some(lines) = Self::page_lines(self.viewer.as_ref().unwrap(), page_idx).filter(|l| !l.is_empty()) {
-                        let cursor = self.page_cursor.unwrap_or(selection::Cursor { line: 0, character: 0 });
+                        let cursor = self.cursor_for_page(page_idx);
                         let bounds = selection::text_object_paragraph(lines, cursor);
                         self.apply_text_object(Some(bounds));
                         self.copy_selection(ctx);
@@ -745,7 +1039,7 @@ impl SpikeApp {
             SelectSentence => {
                 if let Some(page_idx) = self.keyboard_page() {
                     if let Some(lines) = Self::page_lines(self.viewer.as_ref().unwrap(), page_idx) {
-                        let cursor = self.page_cursor.unwrap_or(selection::Cursor { line: 0, character: 0 });
+                        let cursor = self.cursor_for_page(page_idx);
                         let bounds = selection::text_object_sentence(lines, cursor);
                         self.apply_text_object(bounds);
                     }
@@ -754,7 +1048,7 @@ impl SpikeApp {
             SelectParagraph => {
                 if let Some(page_idx) = self.keyboard_page() {
                     if let Some(lines) = Self::page_lines(self.viewer.as_ref().unwrap(), page_idx).filter(|l| !l.is_empty()) {
-                        let cursor = self.page_cursor.unwrap_or(selection::Cursor { line: 0, character: 0 });
+                        let cursor = self.cursor_for_page(page_idx);
                         let bounds = selection::text_object_paragraph(lines, cursor);
                         self.apply_text_object(Some(bounds));
                     }
@@ -765,10 +1059,12 @@ impl SpikeApp {
         }
     }
 
-    /// Builds a fresh `Viewer` for the active tab (cheap: `Viewer::load`
-    /// only reads page sizes, no rasterization — see `progressive_render`
-    /// for the part that actually renders bitmaps). Called only for a
-    /// tab with no cached `Viewer` yet; see `switch_to_active_tab`.
+    /// Builds a fresh `Viewer` for the active tab (cheap now: `Viewer::
+    /// load` only reads page 0's size plus a placeholder for every
+    /// other page — see its own doc comment for why that changed — not
+    /// rasterization, that's still `progressive_render`'s job). Called
+    /// only for a tab with no cached `Viewer` yet; see
+    /// `switch_to_active_tab`.
     fn load_viewer(&mut self, ctx: &egui::Context) {
         let result = (|| -> Result<Viewer, document::DocumentError> {
             let Some(active) = self.app.active() else {
@@ -783,6 +1079,52 @@ impl SpikeApp {
                 self.status = format!("load error: {e}");
                 self.notify(ctx, format!("Cannot open document: {e}"));
                 self.viewer = None;
+            }
+        }
+    }
+
+    /// Reads every page's real size on a dedicated one-shot background
+    /// thread (see `viewer::Viewer::measure_page_sizes`'s doc comment
+    /// for why `load_viewer` no longer does this inline), sent back
+    /// through a channel this stores in `pending_sizes` keyed by `tab`.
+    /// `apply_pending_page_sizes` drains it once it finishes.
+    fn spawn_page_size_measurement(&mut self, tab: usize, document: Arc<document::Document<'static>>, ctx: egui::Context) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("ggpdf-measure-sizes".to_string())
+            .spawn(move || {
+                if let Ok(sizes) = Viewer::measure_page_sizes(&document) {
+                    if tx.send(sizes).is_ok() {
+                        ctx.request_repaint();
+                    }
+                }
+            })
+            .expect("spawn size-measurement thread");
+        self.pending_sizes.push((tab, rx));
+    }
+
+    /// Applies any size measurement that's finished — corrects a tab's
+    /// pages from `Viewer::load`'s page-0-sized placeholder to their
+    /// real, possibly differing sizes. Routes by the stored `tab` index
+    /// into whichever of `self.viewer`/`self.viewers` currently holds
+    /// it, same pattern as `apply_render_result`; also shares that
+    /// method's known gap (a `tab` index can go stale across a tab
+    /// close — not reachable from the UI yet).
+    fn apply_pending_page_sizes(&mut self) {
+        let pending = std::mem::take(&mut self.pending_sizes);
+        for (tab, rx) in pending {
+            match rx.try_recv() {
+                Ok(sizes) => {
+                    let viewer = if self.loaded_key == Some(tab) { self.viewer.as_mut() } else { self.viewers.get_mut(tab).and_then(Option::as_mut) };
+                    if let Some(viewer) = viewer {
+                        viewer.apply_measured_sizes(&sizes);
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => self.pending_sizes.push((tab, rx)),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // Measurement thread failed/panicked — pages keep
+                    // page 0's placeholder size rather than retrying.
+                }
             }
         }
     }
@@ -842,63 +1184,152 @@ impl SpikeApp {
         self.pending_zoom_anchor = None;
     }
 
-    /// Rasterizes a few not-yet-rendered pages (see `viewer::Viewer`'s
-    /// doc comment), keeping any single frame fast regardless of
-    /// document length — opening a 300-page PDF shows page 1 instantly
-    /// and fills in the rest over the next several frames instead of
-    /// blocking the whole window until every page is decoded.
+    /// Submits not-yet-rendered pages to `render_worker` (see
+    /// `viewer::Viewer`'s doc comment). `collect_render_results` uploads
+    /// one completed result before layout. This runs after layout, so
+    /// eviction never relies on the previous zoom/tab's page rects,
+    /// keeping any single frame fast regardless of document
+    /// length — opening a 300-page PDF shows page 1 instantly and fills
+    /// in the rest over the next several frames instead of blocking the
+    /// whole window until every page is decoded. PDFium rasterization
+    /// and text extraction run on `render_worker`'s background thread,
+    /// not here — only `collect_render_results` uploads completed textures
+    /// (found live: "scrolling and zooming is slow" on
+    /// bigger PDFs, traced to this method previously calling
+    /// `Viewer::render_page` — PDFium decode, dark-filter math, and text
+    /// extraction together — synchronously on the UI thread every frame
+    /// there was unrendered work nearby).
+    fn collect_render_results(&mut self, ctx: &egui::Context) {
+        self.render_worker.set_repaint_context(ctx);
+        self.apply_pending_page_sizes();
+        if let Some(result) = self.render_worker.poll_one() {
+            self.apply_render_result(result, ctx);
+            ctx.request_repaint();
+        }
+    }
+
+    /// Called after ScrollArea lays out pages, so its viewport and page
+    /// rectangles refer to this frame, not to the old zoom or old tab.
     fn progressive_render(&mut self, ctx: &egui::Context) {
-        const BUDGET_PER_FRAME: usize = 2;
-        // Bounds GPU memory for a long document (PLAN.md's "sane memory
-        // limits for large PDFs" rule) — a page scrolled this far from
-        // view gets its texture freed by `render::pages_to_evict` below,
-        // to be lazily re-rasterized if scrolled back to, rather than
-        // staying resident for as long as the document stays open.
-        const EVICT_KEEP_RADIUS: usize = 40;
+        // This PDF renders at ~27 MB raw pixels per page at 100% zoom
+        // on a 2x display. The old radius 40 held up to 81 textures
+        // (over 2 GB raw, before upload copies). Keep the visible page
+        // and a few neighbors; evict everything farther away.
+        const EVICT_KEEP_RADIUS: usize = 3;
 
         let Some(active) = self.app.active() else { return };
-        let document = &active.document;
+        let document = active.document.clone();
+        let tab = self.app.active_index();
         let dark = self.dark;
         // Default (2048) is egui's conservative fallback when a backend
         // doesn't report its real limit; a live GPU backend reports the
-        // actual one. Either way, `Viewer::render_page` now clamps to it
-        // per page instead of trusting `RENDER_SCALE` blindly.
+        // actual one. Either way, `viewer::prepare_page` now clamps to it
+        // per page instead of trusting the target scale blindly.
         let max_texture_side = ctx.input(|i| i.max_texture_side);
-        // One frame stale (this runs before this frame's `CentralPanel`
-        // repaints `page_rects`/`viewport_rect`) — the same staleness
-        // `zoom_to`'s pointer anchor already tolerates elsewhere, and
-        // imperceptible for picking a render-priority page.
+        let target_scale = target_render_scale(self.zoom, ctx.pixels_per_point());
+        // This frame's actual scroll position, including tab restoration
+        // and completed zoom anchoring. Evicting from old rectangles made
+        // zoomed pages disappear until a fresh render completed.
         let current_page = self.page_near(self.viewport_rect.center()).map(|(page, _)| page).unwrap_or(0);
+        // Read every frame, not just when submitting something new: the
+        // worker picks its next job by comparing each *already queued*
+        // job against this live value (see `render_worker.rs`), so a
+        // fast scroll or page jump reprioritizes in-flight requests
+        // immediately instead of only the next job submitted — this is
+        // what fixes a slow-to-appear current page (and, since Cursor
+        // mode needs the current page's text already extracted, Cursor
+        // mode feeling stuck) after scrolling or jumping quickly past
+        // many still-unrendered pages: previously a plain FIFO queue
+        // kept processing those *earlier*, now-irrelevant requests
+        // first, in the order they were submitted, before ever reaching
+        // the page actually on screen now.
+        self.render_worker.set_focus(tab, current_page);
         let Some(viewer) = self.viewer.as_mut() else { return };
 
-        // Eviction means some page, somewhere in the document, is
-        // *always* "unrendered" by design once the document is bigger
-        // than the kept window — so "is anything in the whole document
-        // unrendered" can no longer be the repaint-continue signal (it
-        // would never go false, repainting forever for no visible
-        // reason). Ask for candidates across the whole kept window
-        // instead: only the overflow past this frame's render budget
-        // means there's more *nearby* work left to do.
-        let candidates = render::pages_to_render(
-            current_page,
-            viewer.pages.len(),
-            |i| viewer.pages[i].rendered.as_ref().is_none_or(|r| r.dark != dark),
-            2 * EVICT_KEEP_RADIUS + 1,
-        );
-        for &idx in candidates.iter().take(BUDGET_PER_FRAME) {
-            viewer.render_page(document, idx, RENDER_SCALE, max_texture_side, dark, ctx);
-        }
-        let more_nearby_work = candidates.len() > BUDGET_PER_FRAME;
+        // See `page_needs_render`'s own doc comment for the staleness
+        // rule; it's pulled out as a free function so this decision has
+        // direct unit tests.
+        let needs_render =
+            |i: usize| page_needs_render(viewer.pages[i].rendered.as_ref().map(|r| (r.requested_scale, r.dark)), viewer.pages[i].pending, target_scale, dark);
 
+        // Queue only this small window. The worker wakes egui after each
+        // result, so no continuous repaint loop is needed while waiting.
+        let candidates = render::nearby_pages_to_render(current_page, viewer.pages.len(), EVICT_KEEP_RADIUS, needs_render);
+        for &idx in &candidates {
+            viewer.pages[idx].pending = Some((target_scale, dark));
+            self.render_worker.submit(tab, idx, render_worker::RenderJobSpec { requested_scale: target_scale, max_texture_side, dark, document: document.clone() });
+        }
         for idx in render::pages_to_evict(current_page, viewer.pages.len(), |i| viewer.pages[i].rendered.is_some(), EVICT_KEEP_RADIUS) {
             viewer.pages[idx].rendered = None;
+            // Drops a not-yet-started request for this page, if the
+            // worker hasn't already picked it up — no point spending a
+            // render on a page that's about to be evicted again the
+            // next time it drifts this far from the viewport.
+            self.render_worker.cancel(tab, idx);
+            viewer.pages[idx].pending = None;
         }
+        // Cancel queued pages too. The eviction scan above only visits
+        // rendered pages; an off-screen pending page would otherwise
+        // still rasterize and later upload a texture outside the window.
+        for (idx, page) in viewer.pages.iter_mut().enumerate() {
+            if idx.abs_diff(current_page) > EVICT_KEEP_RADIUS && page.pending.take().is_some() {
+                self.render_worker.cancel(tab, idx);
+            }
+        }
+        // The all-pages PDFium scan takes ~1.6 seconds on the reported
+        // 486-page book. Keep it off the critical path for first paint:
+        // start only after the focused page and its prefetched neighbors
+        // have finished rendering. It still corrects mixed page sizes
+        // once complete, without competing with startup rasterization.
+        let nearby_ready = candidates.is_empty()
+            && !viewer.pages.iter().enumerate().any(|(i, page)| i.abs_diff(current_page) <= EVICT_KEEP_RADIUS && page.pending.is_some());
+        if nearby_ready && !viewer.sizes_requested && !viewer.pages.is_empty() {
+            viewer.sizes_requested = true;
+            self.spawn_page_size_measurement(tab, document, ctx.clone());
+        }
+    }
 
-        if more_nearby_work {
-            // Keep egui pumping frames even with no new input, so the
-            // remaining nearby pages keep rendering instead of stalling
-            // until the next keypress/mouse move.
-            ctx.request_repaint();
+    /// Applies one finished background render job: uploads its bitmap as
+    /// a texture (the one piece of `viewer::prepare_page`'s work that
+    /// must happen on the UI thread, since it needs a live
+    /// `egui::Context`) and stores it on whichever tab the job was
+    /// submitted for — the active `self.viewer`, or a parked
+    /// `self.viewers` slot if the user switched tabs while the job was
+    /// in flight.
+    ///
+    /// No generation tagging (see `render_worker.rs`'s own doc comment):
+    /// the bounds check below only guards against a tab that no longer
+    /// exists (closing tabs isn't reachable from the UI yet, so this is
+    /// defensive, not exercised) — it does *not* detect a tab *index*
+    /// that now refers to a different document after an earlier close
+    /// shifted indices. Revisit once `App::close_active` is wired up.
+    fn apply_render_result(&mut self, result: render_worker::RenderResult, ctx: &egui::Context) {
+        let render_worker::RenderResult { tab, prepared } = result;
+        if tab >= self.app.tab_count() {
+            return;
+        }
+        let viewer = if self.loaded_key == Some(tab) { self.viewer.as_mut() } else { self.viewers.get_mut(tab).and_then(Option::as_mut) };
+        let Some(viewer) = viewer else { return };
+        let page_idx = prepared.index;
+        let Some(page) = viewer.pages.get_mut(page_idx) else { return };
+        if page.pending != Some((prepared.requested_scale(), prepared.dark())) {
+            return; // canceled or superseded while the worker was rendering
+        }
+        page.pending = None;
+        if page.rendered.as_ref().is_some_and(|old| old.dark == prepared.dark() && old.requested_scale > prepared.requested_scale()) {
+            return; // never replace a sharper visible texture with stale work
+        }
+        page.rendered = Some(prepared.into_rendered(ctx));
+        if self.loaded_key == Some(tab)
+            && self.active_page == Some(page_idx)
+            && self.page_cursor.is_none()
+            && self.dispatcher.mode() == config::Mode::Cursor
+            && self.page_near(self.viewport_rect.center()).is_some_and(|(focused, _)| focused == page_idx)
+        {
+            // Cursor mode was entered while this page was still loading.
+            // Finish placement when text becomes available; no extra key
+            // press needed.
+            self.apply_action(config::Action::CursorMode, 1, ctx);
         }
     }
 
@@ -1078,9 +1509,9 @@ impl SpikeApp {
 
     /// `pos` is in display space (the already-zoomed on-screen image);
     /// converted to the page's own `render_scale` space (what
-    /// `page.chars`' rects are stored in — usually `RENDER_SCALE`, but
-    /// clamped lower for an unusually large page, see `RenderedPage`)
-    /// before comparing.
+    /// `page.chars`' rects are stored in — the scale `prepare_page`
+    /// actually rasterized this page at, see `RenderedPage`) before
+    /// comparing.
     fn char_at_pos(&self, page_idx: usize, pos: egui::Pos2) -> Option<usize> {
         let viewer = self.viewer.as_ref()?;
         let render_scale = viewer.pages.get(page_idx)?.rendered.as_ref()?.render_scale;
@@ -1091,16 +1522,143 @@ impl SpikeApp {
     }
 }
 
-/// Converts a `text::Rect` (in `RENDER_SCALE` pixel space, the space the
-/// page texture and `page.chars` were computed in) into display space at
-/// the given scale factor (`display_zoom / RENDER_SCALE`).
+/// Converts a `text::Rect` (in a page's own `render_scale` pixel space —
+/// the space its texture and `page.chars` were computed in) into display
+/// space at the given scale factor (`display_zoom / render_scale`).
 fn to_egui_rect(r: text::Rect, scale: f32) -> egui::Rect {
     egui::Rect::from_min_max(egui::pos2(r.left * scale, r.top * scale), egui::pos2(r.right * scale, r.bottom * scale))
 }
 
 #[cfg(test)]
+mod cursor_focus_tests {
+    use super::*;
+
+    fn line_with_rect(top: f32, bottom: f32) -> selection::Line {
+        selection::Line { chars: vec![text::PositionedChar { ch: 'x', rect: text::Rect { left: 0.0, top, right: 10.0, bottom } }] }
+    }
+
+    fn app_with_lines(lines: Vec<selection::Line>) -> SpikeApp {
+        let library = document::test_library();
+        let mut app = SpikeApp::new(library, config::Config::default(), &["assets/test-pdfs/letter.pdf".to_string()]);
+        let ctx = egui::Context::default();
+        app.switch_to_active_tab(&ctx);
+        let texture = ctx.load_texture("test", egui::ColorImage::new([1, 1], vec![egui::Color32::TRANSPARENT; 1]), egui::TextureOptions::LINEAR);
+        let rendered = viewer::RenderedPage { texture, chars: Vec::new(), lines, render_scale: 1.0, requested_scale: 1.0, dark: false };
+        app.viewer.as_mut().unwrap().pages[0].rendered = Some(rendered);
+        app.zoom = 1.0;
+        app.page_rects = vec![egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 1000.0))];
+        // viewport_rect's center.y lands at 50 — right on the second line below.
+        app.viewport_rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 100.0));
+        app
+    }
+
+    #[test]
+    fn initial_cursor_picks_the_line_nearest_the_viewport_center_not_line_zero() {
+        let app = app_with_lines(vec![line_with_rect(0.0, 10.0), line_with_rect(45.0, 55.0), line_with_rect(900.0, 910.0)]);
+        let cursor = app.initial_cursor_for_page(0);
+        assert_eq!(cursor.line, 1, "should land on the line nearest the viewport's vertical center, not line 0");
+        assert_eq!(cursor.character, 0);
+    }
+
+    #[test]
+    fn fresh_cursor_entry_repositions_within_the_same_page() {
+        let mut app = app_with_lines(vec![line_with_rect(0.0, 10.0), line_with_rect(45.0, 55.0)]);
+        let ctx = egui::Context::default();
+        app.active_page = Some(0);
+        app.page_cursor = Some(selection::Cursor { line: 0, character: 0 });
+        app.dispatcher.feed(&app.cfg, "c");
+        app.apply_action(config::Action::CursorMode, 1, &ctx);
+        assert_eq!(app.page_cursor.unwrap().line, 1);
+    }
+
+    #[test]
+    fn initial_cursor_falls_back_to_line_zero_when_the_page_has_not_rendered_yet() {
+        let library = document::test_library();
+        let mut app = SpikeApp::new(library, config::Config::default(), &["assets/test-pdfs/letter.pdf".to_string()]);
+        let ctx = egui::Context::default();
+        app.switch_to_active_tab(&ctx);
+        let cursor = app.initial_cursor_for_page(0);
+        assert_eq!((cursor.line, cursor.character), (0, 0));
+    }
+
+    fn app_on_second_page() -> (SpikeApp, egui::Context) {
+        let library = document::test_library();
+        let mut app = SpikeApp::new(library, config::Config::default(), &["assets/test-pdfs/two-column.pdf".to_string()]);
+        let ctx = egui::Context::default();
+        app.switch_to_active_tab(&ctx);
+        assert!(app.viewer.as_ref().unwrap().pages.len() > 1);
+        app.zoom = 1.0;
+        app.page_rects = vec![
+            egui::Rect::from_min_size(egui::pos2(0.0, -1000.0), egui::vec2(100.0, 900.0)),
+            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 900.0)),
+        ];
+        app.viewport_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(100.0, 100.0));
+        app.active_page = Some(0);
+        app.page_cursor = Some(selection::Cursor { line: 999, character: 0 });
+        (app, ctx)
+    }
+
+    #[test]
+    fn entering_cursor_on_next_page_does_not_reuse_previous_pages_line() {
+        let (mut app, ctx) = app_on_second_page();
+        let doc = document::test_library().open("assets/test-pdfs/two-column.pdf").unwrap();
+        app.viewer.as_mut().unwrap().render_page(&doc, 1, 1.0, 2048, false, &ctx);
+        app.dispatcher.feed(&app.cfg, "c");
+        app.apply_action(config::Action::CursorMode, 1, &ctx);
+        assert_eq!(app.active_page, Some(1));
+        assert!(app.page_cursor.unwrap().line < app.viewer.as_ref().unwrap().pages[1].rendered.as_ref().unwrap().lines.len());
+    }
+
+    #[test]
+    fn entering_cursor_before_page_finishes_rendering_places_it_on_completion() {
+        let (mut app, ctx) = app_on_second_page();
+        app.dispatcher.feed(&app.cfg, "c");
+        app.apply_action(config::Action::CursorMode, 1, &ctx);
+        assert_eq!(app.active_page, Some(1));
+        assert!(app.page_cursor.is_none());
+        let doc = document::test_library().open("assets/test-pdfs/two-column.pdf").unwrap();
+        let prepared = viewer::prepare_page(&doc, 1, 1.0, 2048, false);
+        app.viewer.as_mut().unwrap().pages[1].pending = Some((1.0, false));
+        app.apply_render_result(render_worker::RenderResult { tab: 0, prepared }, &ctx);
+        assert_eq!(app.active_page, Some(1));
+        assert!(app.page_cursor.is_some());
+        assert!(app.cursor_idx.is_some());
+    }
+}
+
+#[cfg(test)]
 mod zoom_tests {
     use super::*;
+
+    #[test]
+    fn scroll_area_keeps_separate_offsets_per_document_tab() {
+        let ctx = egui::Context::default();
+        let frame = |tab: usize, delta: Option<egui::Vec2>| {
+            let mut top = 0.0;
+            let mut output = ctx.run_ui(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0))),
+                ..Default::default()
+            }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::ScrollArea::both().id_salt(("pdf-scroll", tab)).animated(false).show(ui, |ui| {
+                        if let Some(delta) = delta { ui.scroll_with_delta(delta); }
+                        top = ui.allocate_exact_size(egui::vec2(500.0, 3000.0), egui::Sense::hover()).0.top();
+                    });
+                });
+            });
+            output.textures_delta.clear();
+            top
+        };
+        frame(0, None);
+        frame(0, Some(egui::vec2(0.0, -900.0)));
+        let tab_zero = frame(0, None);
+        frame(1, None);
+        let tab_one = frame(1, None);
+        assert!(tab_zero < tab_one - 500.0, "tab 1 must open at its own start, not tab 0's offset");
+        frame(1, Some(egui::vec2(0.0, -400.0)));
+        frame(1, None);
+        assert_eq!(frame(0, None), tab_zero, "returning to tab 0 must restore its scroll offset");
+    }
 
     #[test]
     fn zoom_anchor_accounts_for_centering_and_page_gaps() {
@@ -1246,7 +1804,10 @@ impl eframe::App for SpikeApp {
         // `resolved_actions` above, and acted on once it's closed.
         let mut copy_requested = false;
         let mut confirm_search: Option<SearchDirection> = None;
+        let mut open_dialog_requested = false;
+        let mut dropped_paths = Vec::new();
         ctx.input(|i| {
+            dropped_paths.extend(i.raw.dropped_files.iter().map(|file| file.path().to_path_buf()));
             for event in &i.events {
                 // While typing a `/`/`?` query, every other key below
                 // (chrome shortcuts, the modal `Dispatcher`) is
@@ -1339,6 +1900,7 @@ impl eframe::App for SpikeApp {
                         egui::Key::I if dark_mode_shortcut(self.dispatcher.mode(), i.modifiers) => self.dark = !self.dark,
                         egui::Key::B if i.modifiers.command => self.show_boxes = !self.show_boxes,
                         egui::Key::C if i.modifiers.command => copy_requested = true,
+                        egui::Key::O if i.modifiers.ctrl && !i.modifiers.command && !i.modifiers.alt => open_dialog_requested = true,
                         egui::Key::Escape => {
                             // Unconditional mouse-selection clear, on top
                             // of whatever config.rs's "Esc" binding (if
@@ -1369,6 +1931,14 @@ impl eframe::App for SpikeApp {
         if let Some(direction) = confirm_search {
             self.confirm_search(direction, &ctx);
         }
+        // Native file pickers and PDFium both interact with the OS; never
+        // run them while holding egui's input lock.
+        if open_dialog_requested {
+            if let Some(paths) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_files() {
+                self.open_pdf_paths(paths, &ctx);
+            }
+        }
+        self.open_pdf_paths(dropped_paths, &ctx);
         for (action, count) in resolved_actions {
             self.apply_action(action, count, &ctx);
         }
@@ -1468,14 +2038,14 @@ impl eframe::App for SpikeApp {
                             ui.add(egui::Label::new(egui::RichText::new(prompt.as_deref().unwrap_or(&self.notice)).monospace().size(12.0).color(fg)).wrap_mode(egui::TextWrapMode::Extend));
                         });
                 });
-            ctx.request_repaint();
+            request_repaint(&ctx);
         }
 
         // zoom is intentionally not part of this key: it's a pure
-        // display-space scale now (see RENDER_SCALE), never triggers a
-        // reload.
+        // display-space scale (see `target_render_scale`), never
+        // triggers a reload.
         self.switch_to_active_tab(&ctx);
-        self.progressive_render(&ctx);
+        self.collect_render_results(&ctx);
 
         let selection_color = parse_hex_color(
             &self.cfg.appearance.selection,
@@ -1489,6 +2059,7 @@ impl eframe::App for SpikeApp {
         let search_current_color = parse_hex_color(&self.cfg.appearance.search_current, egui::Color32::from_rgba_unmultiplied(255, 140, 0, 166));
         let page_gap = self.cfg.appearance.page_gap as f32;
 
+        let mut zoom_correction_pending = false;
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(canvas_color))
             .show(ui, |ui| {
@@ -1503,7 +2074,7 @@ impl eframe::App for SpikeApp {
                 let mut page_rects = Vec::new();
                 let mut corrected_zoom = false;
 
-                egui::ScrollArea::both().animated(false).show(ui, |ui| {
+                egui::ScrollArea::both().id_salt(("pdf-scroll", self.app.active_index())).animated(false).show(ui, |ui| {
                     if let Some(delta) = self.pending_scroll.take() {
                         ui.scroll_with_delta(delta);
                     }
@@ -1519,7 +2090,9 @@ impl eframe::App for SpikeApp {
                         // Display size from the page's point size directly
                         // (works whether or not it's rendered yet: for a
                         // rendered page this equals texture_px * display_scale,
-                        // since the texture was rasterized at RENDER_SCALE).
+                        // since the texture was rasterized at its own
+                        // `render_scale`, computed from the live zoom —
+                        // see `target_render_scale`).
                         let size = egui::vec2(page_view.size_pt.width_pt, page_view.size_pt.height_pt) * self.zoom;
                         // Centers the page horizontally when it's narrower
                         // than the viewport; 0 (flush left, scrollable)
@@ -1543,10 +2116,11 @@ impl eframe::App for SpikeApp {
                             ui.add_space(page_gap);
                             continue;
                         };
-                        // Usually `self.zoom / RENDER_SCALE`, but divides
-                        // by this page's own `render_scale` instead —
-                        // clamped lower than `RENDER_SCALE` for an
-                        // unusually large page (see `RenderedPage`).
+                        // This page's own `render_scale` (the scale
+                        // `target_render_scale` computed when it was last
+                        // rasterized, possibly clamped lower for an
+                        // unusually large page — see `RenderedPage`), not
+                        // a single scale shared by every page.
                         let display_scale = self.zoom / page.render_scale;
                         // Gutter line numbers (relative to the cursor's
                         // line, absolute on the cursor's own line — same
@@ -1694,14 +2268,112 @@ impl eframe::App for SpikeApp {
                 // pass using the updated scroll offset, like Sioyek's atomic
                 // zoom-and-offset update before its next paint.
                 if corrected_zoom {
+                    zoom_correction_pending = true;
                     ctx.request_discard("zoom anchor scroll correction");
                 }
             });
+        if !zoom_correction_pending {
+            self.progressive_render(&ctx);
+        }
     }
 }
 
+/// Headless diagnostic for a live "it's slow" report on a specific file,
+/// with no display needed: opens `path` and times exactly the steps
+/// `progressive_render`/`viewer::prepare_page` do per page (PDFium
+/// rasterization, raw text extraction, `text::position_chars`,
+/// `selection::group_into_lines`), without any `egui`/GUI machinery in
+/// the way, so a pathologically slow step shows up directly instead of
+/// being guessed at from on-screen symptoms. Bypasses `app.rs`/
+/// `viewer.rs` deliberately — same reasoning as `dump_fixtures` above.
+fn profile_document(library: &'static PdfLibrary, path: &str) -> Result<(), document::DocumentError> {
+    let open_start = std::time::Instant::now();
+    let doc = library.open(path)?;
+    println!("opened {path:?} in {:.1?}", open_start.elapsed());
+
+    let count_start = std::time::Instant::now();
+    let page_count = doc.page_count();
+    println!("page_count() = {page_count} in {:.1?}", count_start.elapsed());
+
+    // What `Viewer::load` itself now does on the UI thread: one page's
+    // size, not all of them — this is what actually gates when the
+    // window can first paint something.
+    let load_start = std::time::Instant::now();
+    let viewer = viewer::Viewer::load(&doc)?;
+    println!("Viewer::load (UI-thread cost on open) took {:.1?} for {} pages", load_start.elapsed(), viewer.pages.len());
+
+    // Every page's size/rotation — what the old `Viewer::load` did
+    // inline on the UI thread, and what `measure_page_sizes` now does on
+    // a background thread instead (see its own doc comment). Reported
+    // here for comparison against the line above, not as something this
+    // app still waits on to paint the first frame.
+    let sizes_start = std::time::Instant::now();
+    let sizes = viewer::Viewer::measure_page_sizes(&doc)?;
+    let max_dims = sizes.iter().fold((0.0f32, 0.0f32), |acc, s| (acc.0.max(s.width_pt), acc.1.max(s.height_pt)));
+    println!(
+        "measure_page_sizes (background-thread cost) took {:.1?} for all {page_count} pages (largest page: {:.0}x{:.0}pt)",
+        sizes_start.elapsed(),
+        max_dims.0,
+        max_dims.1
+    );
+
+    // A handful of representative pages: first, a couple in the middle,
+    // and last — not every page, so this stays fast even on a huge
+    // document, while still catching a page-size- or content-dependent
+    // slowdown that a uniform fixture wouldn't show.
+    let mut sample: Vec<u16> = vec![0, 19, 20, page_count / 4, page_count / 2, (page_count * 3) / 4, page_count.saturating_sub(1)];
+    sample.sort_unstable();
+    sample.dedup();
+
+    for index in sample {
+        if index >= page_count {
+            continue;
+        }
+        let page = doc.page(index)?;
+        let size = page.size();
+
+        let render_start = std::time::Instant::now();
+        // Same target this app actually uses at 100% zoom on a 2x
+        // display: SCALE(2.0) * pixels_per_point(2.0) * RENDER_HEADROOM.
+        let scale = target_render_scale(SCALE, 2.0);
+        let image = page.render(scale)?;
+        let render_elapsed = render_start.elapsed();
+
+        let chars_start = std::time::Instant::now();
+        let raw_chars = page.raw_chars()?;
+        let chars_elapsed = chars_start.elapsed();
+
+        let position_start = std::time::Instant::now();
+        let positioned = text::position_chars(&raw_chars, size, page.rotation_degrees(), scale);
+        let position_elapsed = position_start.elapsed();
+
+        let lines_start = std::time::Instant::now();
+        let lines = selection::group_into_lines(&positioned);
+        let lines_elapsed = lines_start.elapsed();
+
+        println!(
+            "page {}/{page_count}: {:.0}x{:.0}pt -> {}x{} px | render {:.1?} | raw_chars {:.1?} ({} chars) | position_chars {:.1?} | group_into_lines {:.1?} ({} lines)",
+            index + 1,
+            size.width_pt,
+            size.height_pt,
+            image.width(),
+            image.height(),
+            render_elapsed,
+            chars_elapsed,
+            raw_chars.len(),
+            position_elapsed,
+            lines_elapsed,
+            lines.len(),
+        );
+    }
+
+    Ok(())
+}
+
 fn main() -> eframe::Result<()> {
+    let startup = std::time::Instant::now();
     let cfg = config::load_or_default();
+    let config_elapsed = startup.elapsed();
     let total_bindings: usize = cfg.keys.values().map(|m| m.len()).sum();
     println!(
         "ggpdf: loaded config — {} modes, {total_bindings} key bindings, page_gap={}",
@@ -1709,23 +2381,43 @@ fn main() -> eframe::Result<()> {
         cfg.appearance.page_gap
     );
 
-    let lib_dir = env::var("PDFIUM_LIB_DIR").unwrap_or_else(|_| "pdfium".to_string());
+    let lib_dir = env::var_os("PDFIUM_LIB_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| bundled_resources().map_or_else(|| PathBuf::from("pdfium"), |resources| resources.join("pdfium")));
     let library = PdfLibrary::load(&lib_dir)
         .unwrap_or_else(|e| panic!("failed to load PDFium from {lib_dir:?}: {e}. Set PDFIUM_LIB_DIR."));
+    let library_elapsed = startup.elapsed();
     let library: &'static PdfLibrary = Box::leak(Box::new(library));
 
     let args: Vec<String> = env::args().skip(1).collect();
     let dump = args.iter().any(|a| a == "--dump");
-    let file_args: Vec<String> = args.into_iter().filter(|a| a != "--dump").collect();
+    let profile_flag_index = args.iter().position(|a| a == "--profile");
+    let profile_path = profile_flag_index.and_then(|i| args.get(i + 1)).cloned();
+    let file_args: Vec<String> = args
+        .iter()
+        .enumerate()
+        .filter(|(i, a)| a.as_str() != "--dump" && *i != profile_flag_index.unwrap_or(usize::MAX) && *i != profile_flag_index.map_or(usize::MAX, |fi| fi + 1))
+        .map(|(_, a)| a.clone())
+        .collect();
 
     if dump {
         dump_fixtures(library).expect("dump failed");
         return Ok(());
     }
+    if let Some(path) = profile_path {
+        println!("startup before document: config {:.1?}, PDFium {:.1?}", config_elapsed, library_elapsed - config_elapsed);
+        profile_document(library, &path).unwrap_or_else(|e| println!("profile failed: {e}"));
+        return Ok(());
+    }
 
     eframe::run_native(
         "ggpdf native spike",
-        eframe::NativeOptions::default(),
+        eframe::NativeOptions {
+            // A useful initial reading size for an unmanaged window;
+            // unlike maximized state, this leaves tiling to AeroSpace.
+            viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 800.0]),
+            ..Default::default()
+        },
         Box::new(move |_cc| Ok(Box::new(SpikeApp::new(library, cfg, &file_args)))),
     )
 }
@@ -1733,6 +2425,55 @@ fn main() -> eframe::Result<()> {
 #[cfg(test)]
 mod viewer_smoke_tests {
     use super::*;
+
+    #[test]
+    fn full_page_size_scan_waits_for_initial_render() {
+        let library = document::test_library();
+        let mut app = SpikeApp::new(library, config::Config::default(), &["assets/test-pdfs/letter.pdf".to_string()]);
+        let ctx = egui::Context::default();
+        app.switch_to_active_tab(&ctx);
+        app.progressive_render(&ctx);
+        assert!(!app.viewer.as_ref().unwrap().sizes_requested);
+
+        let doc = library.open("assets/test-pdfs/letter.pdf").unwrap();
+        let target = target_render_scale(app.zoom, ctx.pixels_per_point());
+        app.viewer.as_mut().unwrap().render_page(&doc, 0, target, 2048, false, &ctx);
+        app.viewer.as_mut().unwrap().pages[0].pending = None;
+        app.progressive_render(&ctx);
+        assert!(app.viewer.as_ref().unwrap().sizes_requested);
+    }
+
+    #[test]
+    fn late_low_resolution_result_does_not_replace_sharper_visible_page() {
+        let library = document::test_library();
+        let path = "assets/test-pdfs/letter.pdf".to_string();
+        let mut app = SpikeApp::new(library, config::Config::default(), &[path.clone()]);
+        let ctx = egui::Context::default();
+        app.switch_to_active_tab(&ctx);
+        let doc = library.open(&path).unwrap();
+        app.viewer.as_mut().unwrap().render_page(&doc, 0, 1.5, 2048, false, &ctx);
+        let original_id = app.viewer.as_ref().unwrap().pages[0].rendered.as_ref().unwrap().texture.id();
+        let prepared = viewer::prepare_page(&doc, 0, 1.0, 2048, false);
+        app.viewer.as_mut().unwrap().pages[0].pending = Some((1.0, false));
+        app.apply_render_result(render_worker::RenderResult { tab: 0, prepared }, &ctx);
+        let page = &app.viewer.as_ref().unwrap().pages[0];
+        assert_eq!(page.rendered.as_ref().unwrap().texture.id(), original_id);
+        assert!(page.pending.is_none());
+    }
+
+    #[test]
+    fn canceled_render_result_does_not_restore_an_evicted_page() {
+        let library = document::test_library();
+        let path = "assets/test-pdfs/letter.pdf".to_string();
+        let mut app = SpikeApp::new(library, config::Config::default(), &[path.clone()]);
+        let ctx = egui::Context::default();
+        app.switch_to_active_tab(&ctx);
+        let doc = library.open(&path).expect("open doc");
+        let prepared = viewer::prepare_page(&doc, 0, 1.0, 2048, false);
+        app.viewer.as_mut().unwrap().pages[0].pending = None;
+        app.apply_render_result(render_worker::RenderResult { tab: 0, prepared }, &ctx);
+        assert!(app.viewer.as_ref().unwrap().pages[0].rendered.is_none());
+    }
 
     #[test]
     fn viewer_load_is_cheap_and_render_page_fills_in_each_page() {
