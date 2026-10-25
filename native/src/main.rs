@@ -9,6 +9,8 @@ mod app;
 mod config;
 mod document;
 mod input;
+#[cfg(target_os = "macos")]
+mod macos_documents;
 mod render;
 mod render_worker;
 mod selection;
@@ -460,6 +462,21 @@ mod open_file_tests {
         assert_eq!(viewer.app.active_index(), 2);
         assert_eq!(viewer.app.tab_label(2), Some("no-text.pdf"));
     }
+
+    #[test]
+    fn finder_event_replaces_sample_then_opens_more_tabs() {
+        let library = document::test_library();
+        let mut viewer = SpikeApp::new(library, config::Config::default(), &[]);
+        let ctx = egui::Context::default();
+        assert_eq!(viewer.app.tab_label(0), Some("letter.pdf"));
+        viewer.open_document_event(vec![PathBuf::from("assets/test-pdfs/rotated.pdf")], &ctx);
+        assert_eq!(viewer.app.tab_count(), 1);
+        assert_eq!(viewer.app.tab_label(0), Some("rotated.pdf"));
+        viewer.open_document_event(vec![PathBuf::from("assets/test-pdfs/two-column.pdf")], &ctx);
+        assert_eq!(viewer.app.tab_count(), 2);
+        assert_eq!(viewer.app.tab_label(1), Some("two-column.pdf"));
+        assert_eq!(viewer.app.active_index(), 1);
+    }
 }
 
 struct SpikeApp {
@@ -555,6 +572,9 @@ struct SpikeApp {
     /// one's measurement is still running must not lose track of it.
     /// Drained every frame by `apply_pending_page_sizes`.
     pending_sizes: Vec<(usize, std::sync::mpsc::Receiver<Vec<document::PageSize>>)>,
+    #[cfg(target_os = "macos")]
+    document_events: Option<std::sync::mpsc::Receiver<Vec<PathBuf>>>,
+    sample_tab: bool,
 }
 
 impl SpikeApp {
@@ -571,6 +591,7 @@ impl SpikeApp {
     /// startup.
     fn new(library: &'static PdfLibrary, cfg: config::Config, initial_paths: &[String]) -> Self {
         let mut doc_app = app::App::new(library);
+        let sample_tab = initial_paths.is_empty();
         let fallback;
         let paths: Vec<&str> = if initial_paths.is_empty() {
             fallback = bundled_resources()
@@ -627,7 +648,25 @@ impl SpikeApp {
             search_current: None,
             render_worker: RenderWorker::spawn(),
             pending_sizes: Vec::new(),
+            #[cfg(target_os = "macos")]
+            document_events: None,
+            sample_tab,
         }
+    }
+
+    fn open_document_event(&mut self, paths: Vec<PathBuf>, ctx: &egui::Context) {
+        // A plain launch shows a sample. Replace it when Finder's cold-launch
+        // event arrives after app creation instead of leaving an extra tab.
+        if self.sample_tab && self.app.tab_count() == 1 {
+            self.app.close_active();
+            self.viewer = None;
+            self.viewers.clear();
+            self.loaded_key = None;
+            self.pending_sizes.clear();
+            self.render_worker = RenderWorker::spawn();
+        }
+        self.sample_tab = false;
+        self.open_pdf_paths(paths, ctx);
     }
 
     /// Shows a transient visible message (copy confirmations, errors) —
@@ -1796,6 +1835,13 @@ impl eframe::App for SpikeApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        #[cfg(target_os = "macos")]
+        if let Some(receiver) = &self.document_events {
+            let batches: Vec<_> = receiver.try_iter().collect();
+            for paths in batches {
+                self.open_document_event(paths, &ctx);
+            }
+        }
         let mut resolved_actions: Vec<(config::Action, usize)> = Vec::new();
         // `copy_selection`/`confirm_search` call `ctx.copy_text`/
         // `self.notify` (which itself calls `ctx.input`) — real `egui::
@@ -2479,6 +2525,34 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
+        let mut event_loop = winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event().build()?;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let repaint = Arc::new(std::sync::Mutex::new(None));
+        macos_documents::install(sender, Arc::clone(&repaint));
+        let mut app = eframe::create_native(
+            WINDOW_TITLE,
+            native_options(),
+            Box::new(move |cc| {
+                *repaint.lock().unwrap() = Some(cc.egui_ctx.clone());
+                // Finder can send the cold-launch event before eframe creates
+                // its UI. Consume it now, before deciding on a sample tab.
+                let initial_events: Vec<_> = receiver.try_iter().flatten().collect();
+                let mut paths = file_args.clone();
+                paths.extend(initial_events.iter().map(|p| p.to_string_lossy().into_owned()));
+                let mut viewer = SpikeApp::new(library, cfg, &paths);
+                viewer.document_events = Some(receiver);
+                Ok(Box::new(viewer))
+            }),
+            &event_loop,
+        );
+        let result = event_loop.run_app_on_demand(&mut app);
+        result?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
     eframe::run_native(
         WINDOW_TITLE,
         native_options(),

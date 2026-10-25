@@ -24,6 +24,12 @@ open -a "/Applications/ggPdf.app"
 open -a "/Applications/ggPdf.app" --args "/path/to/book.pdf"
 ```
 
+Finder double-click and “Open with” deliver PDFs as macOS document-open events,
+not command-line arguments. The app handles these on cold launch and in an
+existing window, opening each file as a tab. The macOS bridge adds those
+callbacks to winit's existing application delegate; replacing that delegate
+breaks winit's event loop.
+
 To route new windows to your PDF workspace, put this rule before your
 catch-all `on-window-detected` rule in `~/.config/aerospace/aerospace.toml`:
 
