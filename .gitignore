@@ -2,3 +2,11 @@ __pycache__/
 *.py[cod]
 .DS_Store
 .claude
+/target
+/debug_out
+/pdfium/*.dylib
+/pdfium/*.so
+/pdfium/*.dll
+/native/target/
+/native/debug_out/
+/native/pdfium/*.dylib
