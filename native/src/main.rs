@@ -1787,6 +1787,13 @@ fn dump_fixtures(library: &'static PdfLibrary) -> Result<(), document::DocumentE
 }
 
 impl eframe::App for SpikeApp {
+    // Only restore the outer window. Persisting egui's ScrollArea memory
+    // across launches would reuse tab indices for potentially different
+    // documents; per-tab scroll positions still work within one session.
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let mut resolved_actions: Vec<(config::Action, usize)> = Vec::new();
@@ -2370,6 +2377,35 @@ fn profile_document(library: &'static PdfLibrary, path: &str) -> Result<(), docu
     Ok(())
 }
 
+const WINDOW_TITLE: &str = "ggPDF";
+const WINDOW_APP_ID: &str = "local.jens.ggpdf.native";
+
+fn native_options() -> eframe::NativeOptions {
+    eframe::NativeOptions {
+        // eframe persists the outer window geometry under this stable ID.
+        // This initial size matters only before any window state is saved.
+        viewport: egui::ViewportBuilder::default()
+            .with_app_id(WINDOW_APP_ID)
+            .with_inner_size([1200.0, 800.0]),
+        persist_window: true,
+        ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod window_options_tests {
+    use super::*;
+
+    #[test]
+    fn window_geometry_is_saved_under_stable_id_without_forcing_maximize() {
+        let options = native_options();
+        assert_eq!(options.viewport.app_id.as_deref(), Some(WINDOW_APP_ID));
+        assert_eq!(options.viewport.inner_size, Some(egui::vec2(1200.0, 800.0)));
+        assert_ne!(options.viewport.maximized, Some(true));
+        assert!(options.persist_window);
+    }
+}
+
 fn main() -> eframe::Result<()> {
     let startup = std::time::Instant::now();
     let cfg = config::load_or_default();
@@ -2411,13 +2447,8 @@ fn main() -> eframe::Result<()> {
     }
 
     eframe::run_native(
-        "ggpdf native spike",
-        eframe::NativeOptions {
-            // A useful initial reading size for an unmanaged window;
-            // unlike maximized state, this leaves tiling to AeroSpace.
-            viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 800.0]),
-            ..Default::default()
-        },
+        WINDOW_TITLE,
+        native_options(),
         Box::new(move |_cc| Ok(Box::new(SpikeApp::new(library, cfg, &file_args)))),
     )
 }
