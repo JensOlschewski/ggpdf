@@ -27,6 +27,10 @@ if [ ! -f "$ROOT/pdfium/libpdfium.dylib" ]; then
     echo "Missing $ROOT/pdfium/libpdfium.dylib" >&2
     exit 1
 fi
+if [ ! -f "$ROOT/../icon.png" ]; then
+    echo "Missing $ROOT/../icon.png (run: sips -s format png -z 256 256 icon.icns --out icon.png)" >&2
+    exit 1
+fi
 
 bundle_id_of() {
     "$PLISTBUDDY" -c 'Print :CFBundleIdentifier' "$1/Contents/Info.plist" 2>/dev/null || true
@@ -86,6 +90,10 @@ cp "$ROOT/target/release/ggpdf" "$BUNDLE/Contents/MacOS/ggpdf"
 cp "$ROOT/pdfium/libpdfium.dylib" "$BUNDLE/Contents/Resources/pdfium/libpdfium.dylib"
 cp -R "$ROOT/assets" "$BUNDLE/Contents/Resources/assets"
 cp "$ROOT/../icon.icns" "$BUNDLE/Contents/Resources/ggPdf.icns"
+# Decoded at runtime for the Dock/app-switcher icon (see main.rs's
+# load_app_icon doc comment — without this, eframe falls back to its own
+# generic icon and overwrites CFBundleIconFile's Dock icon with it).
+cp "$ROOT/../icon.png" "$BUNDLE/Contents/Resources/icon.png"
 
 cat > "$BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
