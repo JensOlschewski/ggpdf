@@ -1,7 +1,7 @@
 # ggPdf
 
-Heavily vibecoded minimal, keyboard-driven PDF viewer with Vim-style motions and
-text selection. Native on macOS, built with Rust and PDFium.
+Heavily vibecoded minimal keyboard-driven PDF viewer with Vim-style motions and
+text selection, based on PDFium engine.
 
 <p align="center">
   <img src="icon.svg" alt="ggPdf icon" width="96">
