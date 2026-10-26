@@ -61,16 +61,23 @@ pub fn install(sender: Sender<Vec<PathBuf>>, repaint: Arc<Mutex<Option<eframe::e
     let class = class as *const _ as *mut ffi::objc_class;
     // Objective-C method encodings: BOOL/void, self, selector, app, argument.
     // Winit's class is registered, but these selectors are not implemented.
+    //
+    // `class_addMethod` returns objc2's `Bool` typedef, which is a plain
+    // `bool` on arm64 but a C `signed char`-sized integer on x86_64 (the
+    // Objective-C runtime's own ABI split) — comparing it against the
+    // integer literal `0` only type-checked on whichever architecture was
+    // tried first. `i32::from` has a `std`-provided conversion for both,
+    // so the comparison compiles on either.
     unsafe {
-        assert_ne!(ffi::class_addMethod(class, sel!(application:openFile:).as_ptr(),
+        assert_ne!(i32::from(ffi::class_addMethod(class, sel!(application:openFile:).as_ptr(),
             Some(std::mem::transmute::<unsafe extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut NSString) -> bool, unsafe extern "C" fn()>(open_file)),
-            c"c@:@@".as_ptr()), 0);
-        assert_ne!(ffi::class_addMethod(class, sel!(application:openFiles:).as_ptr(),
+            c"c@:@@".as_ptr())), 0);
+        assert_ne!(i32::from(ffi::class_addMethod(class, sel!(application:openFiles:).as_ptr(),
             Some(std::mem::transmute::<unsafe extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut NSArray<NSString>), unsafe extern "C" fn()>(open_files)),
-            c"v@:@@".as_ptr()), 0);
-        assert_ne!(ffi::class_addMethod(class, sel!(application:openURLs:).as_ptr(),
+            c"v@:@@".as_ptr())), 0);
+        assert_ne!(i32::from(ffi::class_addMethod(class, sel!(application:openURLs:).as_ptr(),
             Some(std::mem::transmute::<unsafe extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut NSArray<NSURL>), unsafe extern "C" fn()>(open_urls)),
-            c"v@:@@".as_ptr()), 0);
+            c"v@:@@".as_ptr())), 0);
     }
     DELIVERY.set((sender, repaint)).expect("document handler registered twice");
 }
