@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      # pdfium-render dynamically loads this at test/run time (see
+      # document.rs's PdfLibrary::load) — it isn't vendored in the repo
+      # (.gitignore excludes it, same as a local checkout), so CI fetches
+      # the same prebuilt binary the README points contributors at.
+      - name: Fetch PDFium (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          case "$(uname -m)" in
+            arm64) asset=pdfium-mac-arm64 ;;
+            x86_64) asset=pdfium-mac-x64 ;;
+            *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+          esac
+          url=$(curl -fsSL https://api.github.com/repos/bblanchon/pdfium-binaries/releases/latest \
+            | grep -oE "https://[^\"]+${asset}\.tgz")
+          curl -fsSL "$url" -o pdfium.tgz
+          mkdir -p pdfium
+          tar -xzf pdfium.tgz -O lib/libpdfium.dylib > pdfium/libpdfium.dylib
+          chmod +x pdfium/libpdfium.dylib
+
+      - name: Fetch PDFium (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -eu
+          url=$(curl -fsSL https://api.github.com/repos/bblanchon/pdfium-binaries/releases/latest \
+            | grep -oE "https://[^\"]+pdfium-win-x64\.tgz")
+          curl -fsSL "$url" -o pdfium.tgz
+          mkdir -p pdfium
+          tar -xzf pdfium.tgz -O bin/pdfium.dll > pdfium/pdfium.dll
+
+      - name: Build
+        run: cargo build --locked --all-targets
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Clippy
+        run: cargo clippy --all-targets
