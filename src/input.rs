@@ -95,6 +95,13 @@ impl Dispatcher {
     }
 }
 
+/// Whether a plain, unmodified `i` in the current mode should toggle dark
+/// mode rather than start a text object (`is`/`ip` in Cursor/Visual
+/// modes) — only Normal mode has no other use for a bare `i`.
+pub fn dark_mode_shortcut(mode: Mode, modifiers: eframe::egui::Modifiers) -> bool {
+    mode == Mode::Normal && !modifiers.any()
+}
+
 /// Converts an egui input event into a key token matching `config.rs`'s
 /// `KeySeq` vocabulary (space-joined tokens like `"g g"`, `"y i s"`), or
 /// `None` for events that aren't a single dispatchable keypress.
@@ -225,5 +232,14 @@ mod tests {
         assert_eq!(d.feed(&cfg, "1"), None);
         assert_eq!(d.feed(&cfg, "0"), None);
         assert_eq!(d.feed(&cfg, "l"), Some((Action::CharacterRight, 10)));
+    }
+
+    #[test]
+    fn dark_mode_shortcut_only_works_in_normal_mode() {
+        for mode in [Mode::Cursor, Mode::Visual, Mode::VisualLine] {
+            assert!(!dark_mode_shortcut(mode, eframe::egui::Modifiers::NONE));
+        }
+        assert!(dark_mode_shortcut(Mode::Normal, eframe::egui::Modifiers::NONE));
+        assert!(!dark_mode_shortcut(Mode::Normal, eframe::egui::Modifiers::CTRL));
     }
 }
