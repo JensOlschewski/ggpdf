@@ -5,6 +5,10 @@
 //! geometry can support visual.js-style motions and whether the viewer
 //! layout can look/behave like the current Chrome/PDF.js-based ggpdf.
 
+// Installed release builds are GUI apps: opening a PDF must not spawn a console.
+// Keep a console in debug builds for cargo run diagnostics.
+#![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
+
 mod app;
 mod config;
 mod document;
@@ -25,14 +29,28 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use viewer::Viewer;
 
-/// Resources shipped beside the executable in a macOS `.app`. Development
-/// builds keep using paths relative to the current working directory.
+/// Resources shipped with an installed app. Development builds keep using
+/// paths relative to the current working directory.
 fn bundled_resources() -> Option<PathBuf> {
     let executable = env::current_exe().ok()?;
-    let macos = executable.parent()?;
-    let contents = macos.parent()?;
-    (macos.file_name()? == "MacOS" && contents.file_name()? == "Contents")
-        .then(|| contents.join("Resources"))
+    #[cfg(target_os = "windows")]
+    {
+        let directory = executable.parent()?;
+        return (directory.join("pdfium/pdfium.dll").is_file()
+            && directory.join("assets/test-pdfs/letter.pdf").is_file())
+            .then(|| directory.to_path_buf());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let macos = executable.parent()?;
+        let contents = macos.parent()?;
+        (macos.file_name()? == "MacOS" && contents.file_name()? == "Contents")
+            .then(|| contents.join("Resources"))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        None
+    }
 }
 
 /// Pixels per PDF point at 100% zoom. 2.0 == 144 DPI (72 * 2).
@@ -2427,8 +2445,8 @@ const WINDOW_TITLE: &str = "ggPdf";
 const WINDOW_APP_ID: &str = "local.jens.ggpdf.native";
 
 /// Decodes `icon.png` into the raw RGBA egui/winit wants for a window/app
-/// icon. Checked first beside the executable (`bundled_resources()`, set
-/// by `install-macos.sh`), then relative to the dev checkout — so `cargo
+/// icon. Checked first in the installed resources (`bundled_resources()`),
+/// then relative to the dev checkout — so `cargo
 /// run` picks up the same icon without needing it installed anywhere.
 ///
 /// Without this, `eframe::NativeOptions::viewport` has no icon set, and

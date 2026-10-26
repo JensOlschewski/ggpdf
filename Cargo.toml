@@ -12,6 +12,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.8"
 unicode-segmentation = "1.13.3"
 
+[build-dependencies]
+winresource = "0.1.34"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5.2"
 objc2-app-kit = { version = "0.2.2", features = ["NSApplication"] }
