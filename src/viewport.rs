@@ -58,13 +58,16 @@ pub fn target_render_scale(zoom: f32, pixels_per_point: f32) -> f32 {
 }
 
 /// Whether page `i` needs a fresh render job submitted, given its
-/// current `rendered` state (`requested_scale`, `dark`) and any
-/// in-flight `pending` job, against the live `target_scale`/`dark`.
-/// Pulled out of `SpikeApp::progressive_render`'s submission loop so
-/// this decision — the one piece of the worker integration most likely
-/// to regress into either starving a page or looping forever — has its
-/// own direct unit tests rather than only being exercised indirectly
-/// through a live `egui::Context`.
+/// current `rendered` state's `requested_scale` and any in-flight
+/// `pending` job, against the live `target_scale`. Dark mode plays no
+/// part here: `viewer::prepare_page` always builds both theme textures
+/// together, so a dark/light toggle never needs a new render job, only
+/// a different texture already sitting in `RenderedPage`. Pulled out of
+/// `SpikeApp::progressive_render`'s submission loop so this decision —
+/// the one piece of the worker integration most likely to regress into
+/// either starving a page or looping forever — has its own direct unit
+/// tests rather than only being exercised indirectly through a live
+/// `egui::Context`.
 ///
 /// Compares against `requested_scale`, not the possibly-clamped
 /// `render_scale` a page's bitmap actually ended up at (see
@@ -73,13 +76,13 @@ pub fn target_render_scale(zoom: f32, pixels_per_point: f32) -> f32 {
 /// forever for an oversized page at a high zoom, since a clamped render
 /// can never reach `target_scale` no matter how many times it's
 /// re-requested.
-pub fn page_needs_render(rendered: Option<(f32, bool)>, pending: Option<(f32, bool)>, target_scale: f32, dark: bool) -> bool {
-    if pending.is_some_and(|(pending_scale, pending_dark)| pending_dark == dark && pending_scale + 0.01 >= target_scale) {
+pub fn page_needs_render(rendered: Option<f32>, pending: Option<f32>, target_scale: f32) -> bool {
+    if pending.is_some_and(|pending_scale| pending_scale + 0.01 >= target_scale) {
         return false;
     }
     match rendered {
         None => true,
-        Some((requested_scale, rendered_dark)) => rendered_dark != dark || target_scale > requested_scale + 0.01,
+        Some(requested_scale) => target_scale > requested_scale + 0.01,
     }
 }
 
@@ -151,20 +154,19 @@ mod render_scale_tests {
     }
 
     #[test]
-    fn unrendered_or_wrong_theme_pages_need_a_render() {
-        assert!(page_needs_render(None, None, 3.0, false), "never rendered");
-        assert!(page_needs_render(Some((3.0, true)), None, 3.0, false), "rendered dark, now wants light");
+    fn an_unrendered_page_needs_a_render() {
+        assert!(page_needs_render(None, None, 3.0), "never rendered");
     }
 
     #[test]
     fn a_page_rendered_at_or_above_target_scale_does_not_need_rerendering() {
-        assert!(!page_needs_render(Some((3.0, false)), None, 3.0, false), "exactly at target");
-        assert!(!page_needs_render(Some((5.0, false)), None, 3.0, false), "zoomed back out — reuse the higher-res texture");
+        assert!(!page_needs_render(Some(3.0), None, 3.0), "exactly at target");
+        assert!(!page_needs_render(Some(5.0), None, 3.0), "zoomed back out — reuse the higher-res texture");
     }
 
     #[test]
     fn zooming_in_past_the_last_requested_scale_needs_a_rerender() {
-        assert!(page_needs_render(Some((2.0, false)), None, 3.0, false));
+        assert!(page_needs_render(Some(2.0), None, 3.0));
     }
 
     #[test]
@@ -176,24 +178,19 @@ mod render_scale_tests {
         // one — so as long as the target hasn't grown past what was
         // already requested, this must say "no" even though the texture
         // itself is objectively lower-resolution than target_scale.
-        assert!(!page_needs_render(Some((3.0, false)), None, 3.0, false));
+        assert!(!page_needs_render(Some(3.0), None, 3.0));
     }
 
     #[test]
-    fn an_in_flight_job_for_the_same_theme_blocks_resubmission() {
-        assert!(!page_needs_render(None, Some((3.0, false)), 3.0, false));
-        assert!(!page_needs_render(Some((2.0, false)), Some((3.0, false)), 3.0, false), "already requested the higher scale, don't duplicate");
+    fn an_in_flight_job_blocks_resubmission() {
+        assert!(!page_needs_render(None, Some(3.0), 3.0));
+        assert!(!page_needs_render(Some(2.0), Some(3.0), 3.0), "already requested the higher scale, don't duplicate");
     }
 
     #[test]
     fn zooming_past_pending_resolution_supersedes_the_old_request() {
-        assert!(page_needs_render(Some((2.0, false)), Some((2.5, false)), 3.0, false));
-        assert!(page_needs_render(None, Some((2.5, false)), 3.0, false));
-    }
-
-    #[test]
-    fn an_in_flight_job_for_the_other_theme_does_not_block_a_theme_toggle() {
-        assert!(page_needs_render(Some((3.0, true)), Some((3.0, true)), 3.0, false), "dark job in flight, but we now want light");
+        assert!(page_needs_render(Some(2.0), Some(2.5), 3.0));
+        assert!(page_needs_render(None, Some(2.5), 3.0));
     }
 
     #[test]

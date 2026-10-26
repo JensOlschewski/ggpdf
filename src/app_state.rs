@@ -763,7 +763,6 @@ impl SpikeApp {
         let Some(active) = self.app.active() else { return };
         let document = active.document.clone();
         let tab = self.app.active_index();
-        let dark = self.dark;
         // Default (2048) is egui's conservative fallback when a backend
         // doesn't report its real limit; a live GPU backend reports the
         // actual one. Either way, `viewer::prepare_page` now clamps to it
@@ -785,15 +784,15 @@ impl SpikeApp {
         // See `viewport::page_needs_render`'s own doc comment for the
         // staleness rule.
         let needs_render = |i: usize| {
-            crate::viewport::page_needs_render(viewer.pages[i].rendered.as_ref().map(|r| (r.requested_scale, r.dark)), viewer.pages[i].pending, target_scale, dark)
+            crate::viewport::page_needs_render(viewer.pages[i].rendered.as_ref().map(|r| r.requested_scale), viewer.pages[i].pending, target_scale)
         };
 
         // Queue only this small window. The worker wakes egui after each
         // result, so no continuous repaint loop is needed while waiting.
         let candidates = crate::render::nearby_pages_to_render(current_page, viewer.pages.len(), EVICT_KEEP_RADIUS, needs_render);
         for &idx in &candidates {
-            viewer.pages[idx].pending = Some((target_scale, dark));
-            self.render_worker.submit(tab, idx, render_worker::RenderJobSpec { requested_scale: target_scale, max_texture_side, dark, document: document.clone() });
+            viewer.pages[idx].pending = Some(target_scale);
+            self.render_worker.submit(tab, idx, render_worker::RenderJobSpec { requested_scale: target_scale, max_texture_side, document: document.clone() });
         }
         for idx in crate::render::pages_to_evict(current_page, viewer.pages.len(), |i| viewer.pages[i].rendered.is_some(), EVICT_KEEP_RADIUS) {
             viewer.pages[idx].rendered = None;
@@ -859,11 +858,11 @@ impl SpikeApp {
         let Some(viewer) = viewer else { return };
         let page_idx = prepared.index;
         let Some(page) = viewer.pages.get_mut(page_idx) else { return };
-        if page.pending != Some((prepared.requested_scale(), prepared.dark())) {
+        if page.pending != Some(prepared.requested_scale()) {
             return; // canceled or superseded while the worker was rendering
         }
         page.pending = None;
-        if page.rendered.as_ref().is_some_and(|old| old.dark == prepared.dark() && old.requested_scale > prepared.requested_scale()) {
+        if page.rendered.as_ref().is_some_and(|old| old.requested_scale > prepared.requested_scale()) {
             return; // never replace a sharper visible texture with stale work
         }
         page.rendered = Some(prepared.into_rendered(ctx));
@@ -1087,7 +1086,7 @@ mod tab_cache_tests {
         // default()`'s texture size limit — unrelated to what this test
         // is pinning down.
         let doc = library.open(&paths[0]).expect("open doc for rendering");
-        app.viewer.as_mut().unwrap().render_page(&doc, 0, SCALE, 2048, false, &ctx);
+        app.viewer.as_mut().unwrap().render_page(&doc, 0, SCALE, 2048, &ctx);
         let tab0_rendered = app.viewer.as_ref().unwrap().pages.iter().filter(|p| p.rendered.is_some()).count();
         assert!(tab0_rendered > 0, "render_page should have rasterized the page");
 
@@ -1183,7 +1182,8 @@ mod cursor_focus_tests {
         let ctx = egui::Context::default();
         app.switch_to_active_tab(&ctx);
         let texture = ctx.load_texture("test", egui::ColorImage::new([1, 1], vec![egui::Color32::TRANSPARENT; 1]), egui::TextureOptions::LINEAR);
-        let rendered = viewer::RenderedPage { texture, chars: Vec::new(), lines, render_scale: 1.0, requested_scale: 1.0, dark: false };
+        let dark_texture = texture.clone();
+        let rendered = viewer::RenderedPage { texture, dark_texture, chars: Vec::new(), lines, render_scale: 1.0, requested_scale: 1.0 };
         app.viewer.as_mut().unwrap().pages[0].rendered = Some(rendered);
         app.zoom = 1.0;
         app.page_rects = vec![egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 1000.0))];
@@ -1242,7 +1242,7 @@ mod cursor_focus_tests {
     fn entering_cursor_on_next_page_does_not_reuse_previous_pages_line() {
         let (mut app, ctx) = app_on_second_page();
         let doc = document::test_library().open("assets/test-pdfs/two-column.pdf").unwrap();
-        app.viewer.as_mut().unwrap().render_page(&doc, 1, 1.0, 2048, false, &ctx);
+        app.viewer.as_mut().unwrap().render_page(&doc, 1, 1.0, 2048, &ctx);
         app.dispatcher.feed(&app.cfg, "c");
         app.apply_action(config::Action::CursorMode, 1, &ctx);
         assert_eq!(app.active_page, Some(1));
@@ -1257,8 +1257,8 @@ mod cursor_focus_tests {
         assert_eq!(app.active_page, Some(1));
         assert!(app.page_cursor.is_none());
         let doc = document::test_library().open("assets/test-pdfs/two-column.pdf").unwrap();
-        let prepared = viewer::prepare_page(&doc, 1, 1.0, 2048, false);
-        app.viewer.as_mut().unwrap().pages[1].pending = Some((1.0, false));
+        let prepared = viewer::prepare_page(&doc, 1, 1.0, 2048);
+        app.viewer.as_mut().unwrap().pages[1].pending = Some(1.0);
         app.apply_render_result(render_worker::RenderResult { tab: 0, prepared }, &ctx);
         assert_eq!(app.active_page, Some(1));
         assert!(app.page_cursor.is_some());
@@ -1283,7 +1283,7 @@ mod viewer_smoke_tests {
 
         let doc = library.open("assets/test-pdfs/letter.pdf").unwrap();
         let target = target_render_scale(app.zoom, ctx.pixels_per_point());
-        app.viewer.as_mut().unwrap().render_page(&doc, 0, target, 2048, false, &ctx);
+        app.viewer.as_mut().unwrap().render_page(&doc, 0, target, 2048, &ctx);
         app.viewer.as_mut().unwrap().pages[0].pending = None;
         app.progressive_render(&ctx);
         assert!(app.viewer.as_ref().unwrap().sizes_requested);
@@ -1297,10 +1297,10 @@ mod viewer_smoke_tests {
         let ctx = egui::Context::default();
         app.switch_to_active_tab(&ctx);
         let doc = library.open(&path).unwrap();
-        app.viewer.as_mut().unwrap().render_page(&doc, 0, 1.5, 2048, false, &ctx);
+        app.viewer.as_mut().unwrap().render_page(&doc, 0, 1.5, 2048, &ctx);
         let original_id = app.viewer.as_ref().unwrap().pages[0].rendered.as_ref().unwrap().texture.id();
-        let prepared = viewer::prepare_page(&doc, 0, 1.0, 2048, false);
-        app.viewer.as_mut().unwrap().pages[0].pending = Some((1.0, false));
+        let prepared = viewer::prepare_page(&doc, 0, 1.0, 2048);
+        app.viewer.as_mut().unwrap().pages[0].pending = Some(1.0);
         app.apply_render_result(render_worker::RenderResult { tab: 0, prepared }, &ctx);
         let page = &app.viewer.as_ref().unwrap().pages[0];
         assert_eq!(page.rendered.as_ref().unwrap().texture.id(), original_id);
@@ -1315,7 +1315,7 @@ mod viewer_smoke_tests {
         let ctx = egui::Context::default();
         app.switch_to_active_tab(&ctx);
         let doc = library.open(&path).expect("open doc");
-        let prepared = viewer::prepare_page(&doc, 0, 1.0, 2048, false);
+        let prepared = viewer::prepare_page(&doc, 0, 1.0, 2048);
         app.viewer.as_mut().unwrap().pages[0].pending = None;
         app.apply_render_result(render_worker::RenderResult { tab: 0, prepared }, &ctx);
         assert!(app.viewer.as_ref().unwrap().pages[0].rendered.is_none());
@@ -1333,30 +1333,29 @@ mod viewer_smoke_tests {
         let mut v = Viewer::load(&doc).expect("viewer load");
         assert_eq!(v.pages.len() as u16, page_count);
         assert!(v.pages.iter().all(|p| p.rendered.is_none()), "load() shouldn't rasterize anything");
-        assert_eq!(v.next_unrendered(false), Some(0));
+        assert_eq!(v.next_unrendered(), Some(0));
 
         let ctx = egui::Context::default();
         for i in 0..v.pages.len() {
-            v.render_page(&doc, i, SCALE, 2048, false, &ctx);
+            v.render_page(&doc, i, SCALE, 2048, &ctx);
             assert!(v.pages[i].rendered.as_ref().unwrap().texture.size_vec2().x > 0.0);
         }
-        assert_eq!(v.next_unrendered(false), None, "every page should be rendered now");
+        assert_eq!(v.next_unrendered(), None, "every page should be rendered now");
     }
 
     #[test]
-    fn dark_toggle_marks_an_already_rendered_page_as_unrendered_again() {
+    fn rendering_a_page_builds_both_theme_textures_so_a_dark_toggle_needs_no_rerender() {
         let library = document::test_library();
         let doc = library.open("assets/test-pdfs/letter.pdf").expect("open doc");
         let mut v = Viewer::load(&doc).expect("viewer load");
         let ctx = egui::Context::default();
 
-        v.render_page(&doc, 0, SCALE, 2048, false, &ctx);
-        assert_eq!(v.next_unrendered(false), None, "page 0 is rendered for the light theme");
-        assert_eq!(v.next_unrendered(true), Some(0), "but not yet for dark — toggling must re-render it");
-
-        v.render_page(&doc, 0, SCALE, 2048, true, &ctx);
-        assert!(v.pages[0].rendered.as_ref().unwrap().dark);
-        assert_eq!(v.next_unrendered(true), None);
+        v.render_page(&doc, 0, SCALE, 2048, &ctx);
+        let page = v.pages[0].rendered.as_ref().unwrap();
+        assert!(page.texture.size_vec2().x > 0.0);
+        assert!(page.dark_texture.size_vec2().x > 0.0);
+        assert_ne!(page.texture.id(), page.dark_texture.id(), "a dark toggle must switch textures, not share one");
+        assert_eq!(v.next_unrendered(), None, "both themes are already cached — nothing left to render");
     }
 
     /// Regression test for the GPU-texture-size gap: a page whose point
@@ -1372,7 +1371,7 @@ mod viewer_smoke_tests {
 
         // Letter-size at SCALE=2.0 is already ~1224x1584px; clamp hard
         // to something smaller than that to force the clamp path.
-        v.render_page(&doc, 0, SCALE, 512, false, &ctx);
+        v.render_page(&doc, 0, SCALE, 512, &ctx);
         let size = v.pages[0].rendered.as_ref().unwrap().texture.size_vec2();
         assert!(size.x <= 512.0 && size.y <= 512.0, "got {size:?}");
     }
@@ -1388,9 +1387,9 @@ mod viewer_smoke_tests {
         let ctx = egui::Context::default();
 
         let mut v1 = Viewer::load(&doc).expect("load 1");
-        v1.render_page(&doc, 0, SCALE, 2048, false, &ctx);
+        v1.render_page(&doc, 0, SCALE, 2048, &ctx);
         let mut v2 = Viewer::load(&doc).expect("load 2");
-        v2.render_page(&doc, 0, SCALE * 1.2, 2048, false, &ctx);
+        v2.render_page(&doc, 0, SCALE * 1.2, 2048, &ctx);
 
         let w1 = v1.pages[0].rendered.as_ref().unwrap().texture.size_vec2().x;
         let w2 = v2.pages[0].rendered.as_ref().unwrap().texture.size_vec2().x;

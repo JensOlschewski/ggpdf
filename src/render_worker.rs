@@ -66,7 +66,6 @@ struct JobKey {
 pub struct RenderJobSpec {
     pub requested_scale: f32,
     pub max_texture_side: usize,
-    pub dark: bool,
     pub document: Arc<Document<'static>>,
 }
 
@@ -138,7 +137,7 @@ impl RenderWorker {
                         guard = thread_cv.wait(guard).unwrap();
                     }
                 };
-                let prepared = prepare_page(&spec.document, key.page, spec.requested_scale, spec.max_texture_side, spec.dark);
+                let prepared = prepare_page(&spec.document, key.page, spec.requested_scale, spec.max_texture_side);
                 // The UI thread may have exited (window closed) —
                 // nothing to do with a result nobody will read.
                 if result_tx.send(RenderResult { tab: key.tab, prepared }).is_ok() {
@@ -205,7 +204,7 @@ mod pick_next_tests {
     /// field regardless — opened once per test and cloned into every
     /// queued entry, same pattern as this module's other tests.
     fn spec(document: &Arc<Document<'static>>) -> RenderJobSpec {
-        RenderJobSpec { requested_scale: 1.0, max_texture_side: 2048, dark: false, document: document.clone() }
+        RenderJobSpec { requested_scale: 1.0, max_texture_side: 2048, document: document.clone() }
     }
 
     fn open_test_doc() -> Arc<Document<'static>> {
@@ -277,7 +276,7 @@ mod tests {
         let worker = RenderWorker::spawn();
 
         worker.set_focus(0, 0);
-        worker.submit(0, 0, RenderJobSpec { requested_scale: 1.0, max_texture_side: 2048, dark: false, document: doc });
+        worker.submit(0, 0, RenderJobSpec { requested_scale: 1.0, max_texture_side: 2048, document: doc });
 
         let results = poll_for_a_while(&worker);
         assert_eq!(results.len(), 1);
@@ -294,8 +293,8 @@ mod tests {
         // between the two inserts; otherwise two results are legitimate.
         let mut state = worker.state.lock().unwrap();
         let key = JobKey { tab: 0, page: 0 };
-        state.queue.insert(key, RenderJobSpec { requested_scale: 1.0, max_texture_side: 2048, dark: false, document: doc.clone() });
-        state.queue.insert(key, RenderJobSpec { requested_scale: 1.5, max_texture_side: 2048, dark: false, document: doc });
+        state.queue.insert(key, RenderJobSpec { requested_scale: 1.0, max_texture_side: 2048, document: doc.clone() });
+        state.queue.insert(key, RenderJobSpec { requested_scale: 1.5, max_texture_side: 2048, document: doc });
         assert_eq!(state.queue.len(), 1);
         drop(state);
         worker.work_available.notify_one();

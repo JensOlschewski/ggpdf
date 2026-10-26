@@ -392,7 +392,8 @@ impl eframe::App for SpikeApp {
                             .horizontal(|ui| {
                                 ui.add_space(pad);
                                 let gutter_rect = show_gutter.then(|| ui.allocate_exact_size(egui::vec2(gutter_width, size.y), egui::Sense::hover()).0);
-                                let response = ui.add(egui::Image::new(&page.texture).fit_to_exact_size(size));
+                                let texture = if self.dark { &page.dark_texture } else { &page.texture };
+                                let response = ui.add(egui::Image::new(texture).fit_to_exact_size(size));
                                 (response, gutter_rect)
                             })
                             .inner;

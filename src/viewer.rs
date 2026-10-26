@@ -20,6 +20,13 @@ use image::Pixel;
 
 pub struct RenderedPage {
     pub texture: egui::TextureHandle,
+    /// Same bitmap with `apply_dark_filter` baked in, uploaded alongside
+    /// `texture` from the same PDFium decode — so toggling dark mode on
+    /// an already-rendered page just switches which of these two
+    /// textures `ui.rs` draws. No new PDFium render, text extraction, or
+    /// even a fresh filter pass is needed on a theme toggle, since both
+    /// textures are already sitting in GPU memory.
+    pub dark_texture: egui::TextureHandle,
     pub chars: Vec<PositionedChar>,
     pub lines: Vec<Line>,
     /// Pixels-per-point this page was actually rasterized at. Usually
@@ -40,11 +47,6 @@ pub struct RenderedPage {
     /// forever for an oversized page, since the clamp never lets
     /// `render_scale` reach the target.
     pub requested_scale: f32,
-    /// Whether this texture already has the dark-mode color filter
-    /// baked in (see `apply_dark_filter`). `render_page` re-rasterizes
-    /// on a mismatch against the caller's current theme rather than
-    /// filtering an already-filtered bitmap again.
-    pub dark: bool,
 }
 
 /// The CPU-only half of rendering a page — rasterizing via PDFium,
@@ -56,53 +58,44 @@ pub struct RenderedPage {
 pub struct PreparedPage {
     pub index: usize,
     image: image::RgbaImage,
+    /// `image` with `apply_dark_filter` already applied, computed once
+    /// here from the same decode rather than on demand later — see
+    /// `RenderedPage::dark_texture`'s own doc comment for why both
+    /// themes are always prepared together.
+    dark_image: image::RgbaImage,
     chars: Vec<PositionedChar>,
     lines: Vec<Line>,
     render_scale: f32,
     requested_scale: f32,
-    dark: bool,
 }
 
 impl PreparedPage {
     /// Readable before `into_rendered` consumes `self` — `main.rs`'s
-    /// `apply_render_result` needs these to decide whether this result
+    /// `apply_render_result` needs this to decide whether this result
     /// still matches the page's `pending` request (see that field's own
     /// doc comment) before clearing it.
-    pub fn dark(&self) -> bool {
-        self.dark
-    }
-
     pub fn requested_scale(&self) -> f32 {
         self.requested_scale
     }
 
-    fn empty(index: usize, requested_scale: f32, dark: bool) -> PreparedPage {
-        PreparedPage {
-            index,
-            image: image::RgbaImage::new(1, 1),
-            chars: Vec::new(),
-            lines: Vec::new(),
-            render_scale: requested_scale,
-            requested_scale,
-            dark,
-        }
+    fn empty(index: usize, requested_scale: f32) -> PreparedPage {
+        let image = image::RgbaImage::new(1, 1);
+        let dark_image = image.clone();
+        PreparedPage { index, image, dark_image, chars: Vec::new(), lines: Vec::new(), render_scale: requested_scale, requested_scale }
     }
 
-    /// Uploads the already-decoded bitmap as a texture. Cheap relative
-    /// to `prepare_page` (no PDFium/image-filter work left, just a GPU
-    /// buffer copy) — safe to call on the UI thread once per result.
+    /// Uploads both already-decoded bitmaps as textures. Cheap relative
+    /// to `prepare_page` (no PDFium/image-filter work left, just two GPU
+    /// buffer copies) — safe to call on the UI thread once per result.
     pub fn into_rendered(self, ctx: &egui::Context) -> RenderedPage {
-        let (w, h) = (self.image.width() as usize, self.image.height() as usize);
-        let color_image = egui::ColorImage::from_rgba_unmultiplied([w, h], self.image.as_raw());
-        let texture = ctx.load_texture(format!("page-{}", self.index), color_image, egui::TextureOptions::LINEAR);
-        RenderedPage {
-            texture,
-            chars: self.chars,
-            lines: self.lines,
-            render_scale: self.render_scale,
-            requested_scale: self.requested_scale,
-            dark: self.dark,
-        }
+        let upload = |suffix: &str, image: &image::RgbaImage| {
+            let (w, h) = (image.width() as usize, image.height() as usize);
+            let color_image = egui::ColorImage::from_rgba_unmultiplied([w, h], image.as_raw());
+            ctx.load_texture(format!("page-{}{}", self.index, suffix), color_image, egui::TextureOptions::LINEAR)
+        };
+        let texture = upload("", &self.image);
+        let dark_texture = upload("-dark", &self.dark_image);
+        RenderedPage { texture, dark_texture, chars: self.chars, lines: self.lines, render_scale: self.render_scale, requested_scale: self.requested_scale }
     }
 }
 
@@ -113,7 +106,15 @@ impl PreparedPage {
 /// the rasterized bitmap exceeds `max_texture_side` (see
 /// `RenderedPage::requested_scale`'s own doc comment for why the
 /// pre-clamp value is kept too).
-pub fn prepare_page(doc: &Document, index: usize, requested_scale: f32, max_texture_side: usize, dark: bool) -> PreparedPage {
+///
+/// Always decodes once and derives both the light and dark bitmap from
+/// that single PDFium render — previously this only produced whichever
+/// theme's bitmap the caller currently wanted, so toggling dark mode
+/// re-ran the PDFium render and text extraction for every on-screen page
+/// just to apply a cheap per-pixel recolor. The dark filter itself is
+/// fast; the PDFium render and `FPDFText_*` extraction are not, and
+/// neither depends on theme.
+pub fn prepare_page(doc: &Document, index: usize, requested_scale: f32, max_texture_side: usize) -> PreparedPage {
     let result = (|| -> Result<PreparedPage, DocumentError> {
         let page = doc.page(index as u16)?;
         let size = page.size();
@@ -122,19 +123,18 @@ pub fn prepare_page(doc: &Document, index: usize, requested_scale: f32, max_text
         let max_side = max_texture_side as f32;
         let scale = requested_scale.min(max_side / size.width_pt.max(1.0)).min(max_side / size.height_pt.max(1.0));
 
-        let mut image = page.render(scale)?;
-        if dark {
-            apply_dark_filter(&mut image);
-        }
+        let image = page.render(scale)?;
+        let mut dark_image = image.clone();
+        apply_dark_filter(&mut dark_image);
 
         let raw_chars = page.raw_chars()?;
         let chars = text::position_chars(&raw_chars, size, rotation_degrees, scale);
         let lines = selection::group_into_lines(&chars);
 
-        Ok(PreparedPage { index, image, chars, lines, render_scale: scale, requested_scale, dark })
+        Ok(PreparedPage { index, image, dark_image, chars, lines, render_scale: scale, requested_scale })
     })();
 
-    result.unwrap_or_else(|_| PreparedPage::empty(index, requested_scale, dark))
+    result.unwrap_or_else(|_| PreparedPage::empty(index, requested_scale))
 }
 
 /// Approximates the old app's CSS `filter: invert(0.9) hue-rotate(180deg)`
@@ -169,13 +169,12 @@ pub struct PageView {
     pub size_pt: PageSize,
     /// `None` until `Viewer::render_page` has rasterized this page.
     pub rendered: Option<RenderedPage>,
-    /// `Some((requested_scale, dark))` while `main.rs`'s background
-    /// render worker has a job in flight for this page — set when the
-    /// job is submitted, cleared when its result is applied (see
-    /// `main.rs`'s `apply_render_result`), so `progressive_render`
-    /// doesn't submit the same page twice while waiting on the first
-    /// job.
-    pub pending: Option<(f32, bool)>,
+    /// `Some(requested_scale)` while `main.rs`'s background render
+    /// worker has a job in flight for this page — set when the job is
+    /// submitted, cleared when its result is applied (see `main.rs`'s
+    /// `apply_render_result`), so `progressive_render` doesn't submit
+    /// the same page twice while waiting on the first job.
+    pub pending: Option<f32>,
 }
 
 /// Every page of one open document. `load()` populates sizes only;
@@ -244,25 +243,23 @@ impl Viewer {
         }
     }
 
-    /// Index of the first page not rendered under the current theme, if
-    /// any — a page rendered under the other theme (`dark` mismatch)
-    /// counts as unrendered too. Superseded in `main.rs`'s
-    /// `progressive_render` by `render::pages_to_render`'s
+    /// Index of the first page not rendered yet, if any. Superseded in
+    /// `main.rs`'s `progressive_render` by `render::pages_to_render`'s
     /// viewport-priority scan (this "first in document order" scan
     /// would defeat the point of that prioritization, and would also
     /// never report "done" once `progressive_render`'s eviction is
     /// active — see its own comment); kept as a simple, direct check
     /// for tests.
     #[allow(dead_code)]
-    pub fn next_unrendered(&self, dark: bool) -> Option<usize> {
-        self.pages.iter().position(|p| p.rendered.as_ref().is_none_or(|r| r.dark != dark))
+    pub fn next_unrendered(&self) -> Option<usize> {
+        self.pages.iter().position(|p| p.rendered.is_none())
     }
 
-    /// Rasterizes and caches page `index`. No-op if already rendered
-    /// under the requested `dark` theme. A render failure is recorded as
-    /// an empty page (see `PreparedPage::empty`) rather than left to
-    /// retry forever (except across a `dark` toggle — see
-    /// `next_unrendered`).
+    /// Rasterizes and caches page `index`. No-op if already rendered —
+    /// both themes are prepared together (see `prepare_page`'s own doc
+    /// comment), so there's no theme to re-check here the way there used
+    /// to be. A render failure is recorded as an empty page (see
+    /// `PreparedPage::empty`) rather than left to retry forever.
     ///
     /// `pixels_per_point` is clamped down, per page, so neither
     /// dimension of the rasterized bitmap exceeds `max_texture_side` —
@@ -275,11 +272,11 @@ impl Viewer {
     /// UI-thread-blocking path is kept for tests, which don't need a
     /// background thread for a single-page smoke check.
     #[allow(dead_code)]
-    pub fn render_page(&mut self, doc: &Document, index: usize, pixels_per_point: f32, max_texture_side: usize, dark: bool, ctx: &egui::Context) {
-        if self.pages[index].rendered.as_ref().is_some_and(|r| r.dark == dark) {
+    pub fn render_page(&mut self, doc: &Document, index: usize, pixels_per_point: f32, max_texture_side: usize, ctx: &egui::Context) {
+        if self.pages[index].rendered.is_some() {
             return;
         }
-        let prepared = prepare_page(doc, index, pixels_per_point, max_texture_side, dark);
+        let prepared = prepare_page(doc, index, pixels_per_point, max_texture_side);
         self.pages[index].rendered = Some(prepared.into_rendered(ctx));
     }
 }
