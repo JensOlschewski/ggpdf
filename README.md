@@ -19,8 +19,9 @@ text selection, based on PDFium engine.
 
 ### Requirements
 
-- macOS and Rust/Cargo
-- PDFium for your Mac's architecture at `pdfium/libpdfium.dylib` (not included)
+- macOS or Windows, and Rust/Cargo
+- PDFium for your OS and architecture (not included): `pdfium/libpdfium.dylib`
+  on macOS or `pdfium/pdfium.dll` on Windows
 
 ### macOS
 
@@ -41,6 +42,22 @@ app. From a terminal:
 ```sh
 open -a /Applications/ggPdf.app /path/to/document.pdf
 ```
+
+### Windows
+
+From PowerShell in the cloned repository:
+
+```powershell
+.\install-windows.ps1
+```
+
+This builds the app and installs it for the current user at
+`%LOCALAPPDATA%\Programs\ggPdf`. Run it again to update. It adds a Start menu
+shortcut and an **Open with** entry for PDFs; it does not change your default
+PDF handler. You can open PDFs with **Open with → ggPdf**, drag them into the
+window, or press Ctrl+O. If PowerShell blocks local scripts, run
+`powershell -ExecutionPolicy Bypass -File .\install-windows.ps1` from this
+repository (or `pwsh -ExecutionPolicy Bypass -File .\install-windows.ps1`).
 
 ### Without installing
 
