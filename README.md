@@ -1,10 +1,10 @@
-# ggpdf
+# ggPdf
 
-Heavily vibecoded minimal, keyboard-driven PDF viewer with Vim-style motions and
-text selection.
+Heavily vibecoded minimal keyboard-driven PDF viewer with Vim-style motions and
+text selection, based on PDFium engine.
 
 <p align="center">
-  <img src="icon.svg" alt="ggpdf icon" width="96">
+  <img src="icon.svg" alt="ggPdf icon" width="96">
 </p>
 
 | Cursormode                                                  | Darkmode                                                  |
@@ -19,43 +19,35 @@ text selection.
 
 ### Requirements
 
-- Python 3
+- macOS and Rust/Cargo
+- PDFium for your Mac's architecture at `pdfium/libpdfium.dylib` (not included)
 
 ### macOS
 
 ```sh
 git clone https://github.com/JensOlschewski/ggpdf
 cd ggpdf
-./install.sh
+./install-macos.sh
 ```
 
-This installs `~/Applications/ggpdf.app`. Run it again to update the launcher;
-it also replaces an older `PDF Preview.app` installed by ggpdf. The existing
-default PDF handler is not changed.
+This builds and installs `/Applications/ggPdf.app`. Run it again to update the
+app. The existing default PDF handler is not changed. To make ggPdf the default,
+choose it in Finder → Get Info → Open with → Change All.
 
-### Windows (PowerShell)
+Open PDFs by double-clicking in Finder, using Open with, dragging into the app,
+or pressing Ctrl+O. Finder opens files as tabs on cold launch and in a running
+app. From a terminal:
 
-```powershell
-git clone https://github.com/JensOlschewski/ggpdf
-cd ggpdf
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+```sh
+open -a /Applications/ggPdf.app /path/to/document.pdf
 ```
-
-Run the installer again to update ggpdf's **Open with** registration (including
-the path to this checkout). It builds a small `ggpdf.exe` launcher with its own
-name and icon in `%LOCALAPPDATA%\ggpdf\`. It does not change the default PDF
-app; keep the checkout in place after installing. With a Chromium-based default
-browser (such as Chrome or Edge), ggpdf opens maximized using its own browser
-profile in `%LOCALAPPDATA%\ggpdf\`. This profile does not share cookies,
-extensions, or browser settings with your regular browser. Other browsers
-control their own window size.
 
 ### Without installing
 
-On macOS, Linux, or Windows, run a PDF directly with Python 3:
+Run the native app directly from this checkout:
 
 ```sh
-python3 preview.py document.pdf
+cargo run -- assets/test-pdfs/letter.pdf
 ```
 
 ## Keys
@@ -68,7 +60,7 @@ python3 preview.py document.pdf
 | `Ctrl+k` / `Ctrl+j` | Zoom in / out                |
 | `Ctrl+0`            | Reset zoom to 100%           |
 | `i`                 | Toggle dark/light mode       |
-| `q`                 | Close ggpdf                  |
+| `q`                 | Close ggPdf                  |
 | `c`                 | Enter/Leave text cursor mode |
 | `v` / `Shift+v`     | `VISUAL` / `VISUAL LINE`     |
 
@@ -90,38 +82,24 @@ Prefix `h/j/k/l` and word motions with a count (e.g. `3j`, `2w`, `4l`).
 
 ## Appearance
 
-Edit this repository's `theme.css` to adjust the canvas and dark-page filter:
+Edit `~/.config/ggpdf/config.toml` to adjust the canvas colors and page gap:
 
-```css
-:root {
-  --preview-canvas-light: #ededed;
-  --preview-canvas-dark: #282828;
-  --preview-dark-page-filter: invert(0.9) hue-rotate(180deg);
-}
+```toml
+[appearance]
+canvas_light = "#ededed"
+canvas_dark = "#282828"
+page_gap = 12
 ```
 
-Reload the viewer after editing. Viewer-specific layout lives in `style.css`.
+The native app renders its own UI; the old `theme.css` and `style.css` no longer
+apply.
 
-## Server
+## Local PDFs
 
-The launcher starts an on-demand Python standard-library server on IPv6
-loopback, `http://[::1]:18765`. Requests require an unguessable URL prefix; only
-explicitly opened PDFs and viewer assets are exposed. There is no directory
-browsing or arbitrary-file endpoint. The server stays running for tab reloads
-and subsequent documents. After a reboot, opening a PDF starts it again.
-
-Runtime state and logs: `~/Library/Caches/pdf-preview/` on macOS and
-`%LOCALAPPDATA%\ggpdf\` on Windows. To stop the server on macOS:
-
-```sh
-kill "$(cat ~/Library/Caches/pdf-preview/server.pid)"
-```
-
-Website PDF links retain Chrome's normal handling. This application opens local
-PDFs. It reads the original files, so reloading reflects saved changes; it does
-not auto-refresh documents while they are being edited.
+Website PDF links retain Chrome's normal handling. This app opens local PDFs
+without a Python server or browser profile.
 
 ## License
 
-ggpdf's own code is MIT-licensed (see `LICENSE`). The bundled PDF.js retains its
-Apache-2.0 license in `vendor/LICENSE`.
+ggPdf's own code is MIT-licensed (see `LICENSE`). PDFium's license is in
+`pdfium/LICENSE.txt`.
