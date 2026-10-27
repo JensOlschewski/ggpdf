@@ -11,16 +11,26 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
 jobs:
   macos:
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x86_64
+          - runner: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # Same fetch as ci.yml's "Fetch PDFium (macOS)" step — see its own
-      # comment for why this isn't vendored in the repo.
       - name: Fetch PDFium
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -41,6 +51,11 @@ jobs:
       - name: Build
         run: cargo build --release --locked
 
+      - name: Verify architectures
+        run: |
+          lipo -verify_arch "${{ matrix.arch }}" target/release/ggpdf
+          lipo -verify_arch "${{ matrix.arch }}" pdfium/libpdfium.dylib
+
       - name: Bundle
         run: ./scripts/build-macos-app.sh "$(pwd)" "$RUNNER_TEMP/ggPdf.app" "${{ inputs.version }}"
 
@@ -51,12 +66,12 @@ jobs:
           cp -R "$RUNNER_TEMP/ggPdf.app" "$RUNNER_TEMP/dmg-src/"
           ln -s /Applications "$RUNNER_TEMP/dmg-src/Applications"
           hdiutil create -volname "ggPdf" -srcfolder "$RUNNER_TEMP/dmg-src" \
-            -ov -format UDZO "ggPdf-macos-${{ inputs.version }}.dmg"
+            -ov -format UDZO "ggPdf-macos-${{ inputs.version }}-${{ matrix.arch }}.dmg"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ggpdf-macos
-          path: ggPdf-macos-${{ inputs.version }}.dmg
+          name: ggpdf-macos-${{ matrix.arch }}
+          path: ggPdf-macos-${{ inputs.version }}-${{ matrix.arch }}.dmg
           if-no-files-found: error
 
   windows:
@@ -66,7 +81,6 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # Same fetch as ci.yml's "Fetch PDFium (Windows)" step.
       - name: Fetch PDFium
         shell: bash
         env:
@@ -86,9 +100,6 @@ jobs:
         shell: pwsh
         run: ./scripts/build-windows-app.ps1 -Root (Get-Location) -OutDir "$env:RUNNER_TEMP/ggPdf"
 
-      # Assumed path for GitHub's windows-latest runner image's preinstalled
-      # Inno Setup 6. Verify this still holds on a live run before relying
-      # on it long-term — runner image contents change over time.
       - name: Build installer
         shell: pwsh
         run: |
@@ -108,9 +119,6 @@ jobs:
     needs: [macos, windows]
     runs-on: ubuntu-latest
     steps:
-      # gh release create --generate-notes shells out to git to diff
-      # against the previous tag — needs a real checkout, not just the
-      # downloaded artifacts.
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
@@ -118,6 +126,23 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - run: gh release create "v${{ inputs.version }}" dist/*.dmg dist/*.exe --title "v${{ inputs.version }}" --generate-notes
+      - name: Publish release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release upload "$tag" dist/*.dmg dist/*.exe --clobber
+          else
+            gh release create "$tag" dist/*.dmg dist/*.exe \
+              --target "$GITHUB_SHA" --title "$tag" --generate-notes
+          fi
+
+          # Remove the ambiguous legacy DMG only after both replacements upload.
+          assets=$(gh release view "$tag" --json assets --jq '.assets[].name')
+          legacy="ggPdf-macos-$VERSION.dmg"
+          if printf '%s\n' "$assets" | grep -Fxq "$legacy"; then
+            gh release delete-asset "$tag" "$legacy" --yes
+          fi

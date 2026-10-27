@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [macos-15-intel, macos-15, windows-latest]
     runs-on: ${{ matrix.os }}
     env:
       # Unauthenticated api.github.com calls share a 60/hour rate limit
