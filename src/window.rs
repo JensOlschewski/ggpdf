@@ -10,6 +10,20 @@ use std::path::PathBuf;
 pub const WINDOW_TITLE: &str = "ggPdf";
 pub const WINDOW_APP_ID: &str = "local.jens.ggpdf.native";
 
+/// Hide native windows before eframe destroys their views. AppKit's Touch Bar
+/// finder must retire its responder-chain observations while the views exist.
+#[cfg(target_os = "macos")]
+pub fn prepare_for_exit() {
+    use objc2_app_kit::NSApplication;
+    use objc2_foundation::MainThreadMarker;
+
+    let mtm = MainThreadMarker::new().expect("macOS UI must run on the main thread");
+    let app = NSApplication::sharedApplication(mtm);
+    for window in app.windows() {
+        window.orderOut(None);
+    }
+}
+
 /// Resources shipped with an installed app. Development builds keep using
 /// paths relative to the current working directory.
 pub fn bundled_resources() -> Option<PathBuf> {
