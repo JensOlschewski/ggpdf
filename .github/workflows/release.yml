@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release (e.g. 0.2.0, no leading v)"
+        description: "Version to release (e.g. 0.2.0, no leading v, no suffix — must be dotted numeric for the Windows installer)"
         required: true
         type: string
 
@@ -44,13 +44,20 @@ jobs:
       - name: Bundle
         run: ./scripts/build-macos-app.sh "$(pwd)" "$RUNNER_TEMP/ggPdf.app" "${{ inputs.version }}"
 
-      - name: Zip
-        run: ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/ggPdf.app" "ggPdf-macos-${{ inputs.version }}.zip"
+      - name: Build DMG
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/dmg-src"
+          cp -R "$RUNNER_TEMP/ggPdf.app" "$RUNNER_TEMP/dmg-src/"
+          ln -s /Applications "$RUNNER_TEMP/dmg-src/Applications"
+          hdiutil create -volname "ggPdf" -srcfolder "$RUNNER_TEMP/dmg-src" \
+            -ov -format UDZO "ggPdf-macos-${{ inputs.version }}.dmg"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ggpdf-macos
-          path: ggPdf-macos-${{ inputs.version }}.zip
+          path: ggPdf-macos-${{ inputs.version }}.dmg
+          if-no-files-found: error
 
   windows:
     runs-on: windows-latest
@@ -79,14 +86,23 @@ jobs:
         shell: pwsh
         run: ./scripts/build-windows-app.ps1 -Root (Get-Location) -OutDir "$env:RUNNER_TEMP/ggPdf"
 
-      - name: Zip
+      # Assumed path for GitHub's windows-latest runner image's preinstalled
+      # Inno Setup 6. Verify this still holds on a live run before relying
+      # on it long-term — runner image contents change over time.
+      - name: Build installer
         shell: pwsh
-        run: Compress-Archive -Path "$env:RUNNER_TEMP/ggPdf" -DestinationPath "ggPdf-windows-${{ inputs.version }}.zip"
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            "/DBuildDir=$env:RUNNER_TEMP/ggPdf" `
+            scripts/ggpdf.iss
+        env:
+          GGPDF_VERSION: ${{ inputs.version }}
 
       - uses: actions/upload-artifact@v4
         with:
           name: ggpdf-windows
-          path: ggPdf-windows-${{ inputs.version }}.zip
+          path: ggPdf-windows-${{ inputs.version }}-setup.exe
+          if-no-files-found: error
 
   publish:
     needs: [macos, windows]
@@ -102,6 +118,6 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - run: gh release create "v${{ inputs.version }}" dist/*.zip --title "v${{ inputs.version }}" --generate-notes
+      - run: gh release create "v${{ inputs.version }}" dist/*.dmg dist/*.exe --title "v${{ inputs.version }}" --generate-notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
