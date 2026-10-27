@@ -53,8 +53,8 @@ jobs:
 
       - name: Verify architectures
         run: |
-          lipo -verify_arch "${{ matrix.arch }}" target/release/ggpdf
-          lipo -verify_arch "${{ matrix.arch }}" pdfium/libpdfium.dylib
+          lipo target/release/ggpdf -verify_arch "${{ matrix.arch }}"
+          lipo pdfium/libpdfium.dylib -verify_arch "${{ matrix.arch }}"
 
       - name: Bundle
         run: ./scripts/build-macos-app.sh "$(pwd)" "$RUNNER_TEMP/ggPdf.app" "${{ inputs.version }}"
