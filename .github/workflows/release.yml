@@ -57,6 +57,7 @@ jobs:
         with:
           name: ggpdf-macos
           path: ggPdf-macos-${{ inputs.version }}.dmg
+          if-no-files-found: error
 
   windows:
     runs-on: windows-latest
@@ -101,6 +102,7 @@ jobs:
         with:
           name: ggpdf-windows
           path: ggPdf-windows-${{ inputs.version }}-setup.exe
+          if-no-files-found: error
 
   publish:
     needs: [macos, windows]
