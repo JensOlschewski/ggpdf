@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.2.0, no leading v)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Same fetch as ci.yml's "Fetch PDFium (macOS)" step — see its own
+      # comment for why this isn't vendored in the repo.
+      - name: Fetch PDFium
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          case "$(uname -m)" in
+            arm64) asset=pdfium-mac-arm64 ;;
+            x86_64) asset=pdfium-mac-x64 ;;
+            *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+          esac
+          url=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/bblanchon/pdfium-binaries/releases/latest \
+            | grep -oE "https://[^\"]+${asset}\.tgz")
+          curl -fsSL "$url" -o pdfium.tgz
+          mkdir -p pdfium
+          tar -xzf pdfium.tgz -O lib/libpdfium.dylib > pdfium/libpdfium.dylib
+          chmod +x pdfium/libpdfium.dylib
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Bundle
+        run: ./scripts/build-macos-app.sh "$(pwd)" "$RUNNER_TEMP/ggPdf.app" "${{ inputs.version }}"
+
+      - name: Zip
+        run: ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/ggPdf.app" "ggPdf-macos-${{ inputs.version }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ggpdf-macos
+          path: ggPdf-macos-${{ inputs.version }}.zip
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Same fetch as ci.yml's "Fetch PDFium (Windows)" step.
+      - name: Fetch PDFium
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          url=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/bblanchon/pdfium-binaries/releases/latest \
+            | grep -oE "https://[^\"]+pdfium-win-x64\.tgz")
+          curl -fsSL "$url" -o pdfium.tgz
+          mkdir -p pdfium
+          tar -xzf pdfium.tgz -O bin/pdfium.dll > pdfium/pdfium.dll
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Bundle
+        shell: pwsh
+        run: ./scripts/build-windows-app.ps1 -Root (Get-Location) -OutDir "$env:RUNNER_TEMP/ggPdf"
+
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path "$env:RUNNER_TEMP/ggPdf" -DestinationPath "ggPdf-windows-${{ inputs.version }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ggpdf-windows
+          path: ggPdf-windows-${{ inputs.version }}.zip
+
+  publish:
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      # gh release create --generate-notes shells out to git to diff
+      # against the previous tag — needs a real checkout, not just the
+      # downloaded artifacts.
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - run: gh release create "v${{ inputs.version }}" dist/*.zip --title "v${{ inputs.version }}" --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
