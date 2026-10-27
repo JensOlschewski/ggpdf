@@ -12,6 +12,12 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # Unauthenticated api.github.com calls share a 60/hour rate limit
+      # across every Actions runner's IP pool, not just this job — easy
+      # to trip even on a single run. GITHUB_TOKEN is provided to every
+      # job for free and raises that limit per-token instead.
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -41,7 +47,7 @@ jobs:
             x86_64) asset=pdfium-mac-x64 ;;
             *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
           esac
-          url=$(curl -fsSL https://api.github.com/repos/bblanchon/pdfium-binaries/releases/latest \
+          url=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/bblanchon/pdfium-binaries/releases/latest \
             | grep -oE "https://[^\"]+${asset}\.tgz")
           curl -fsSL "$url" -o pdfium.tgz
           mkdir -p pdfium
@@ -53,7 +59,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          url=$(curl -fsSL https://api.github.com/repos/bblanchon/pdfium-binaries/releases/latest \
+          url=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/bblanchon/pdfium-binaries/releases/latest \
             | grep -oE "https://[^\"]+pdfium-win-x64\.tgz")
           curl -fsSL "$url" -o pdfium.tgz
           mkdir -p pdfium
