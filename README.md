@@ -17,55 +17,42 @@ text selection, based on PDFium engine.
 
 ## Install & use
 
-### Requirements
+### Prebuilt installers
 
-- macOS or Windows, and Rust/Cargo
-- PDFium for your OS and architecture (not included): `pdfium/libpdfium.dylib`
-  on macOS or `pdfium/pdfium.dll` on Windows
+Download an installer from the
+[releases page](https://github.com/JensOlschewski/ggpdf/releases). Installers
+include PDFium; Rust/Cargo is only needed to build from source.
 
-### macOS
+### Build from source
+
+Requires Rust/Cargo and PDFium for your OS and architecture. Place PDFium at
+`pdfium/libpdfium.dylib` (macOS) or `pdfium/pdfium.dll` (Windows).
 
 ```sh
 git clone https://github.com/JensOlschewski/ggpdf
 cd ggpdf
-./install-macos.sh
 ```
 
-This builds and installs `/Applications/ggPdf.app`. Run it again to update the
-app. The existing default PDF handler is not changed. To make ggPdf the default,
-choose it in Finder → Get Info → Open with → Change All.
+Build and install (rerun to update):
 
-Open PDFs by double-clicking in Finder, using Open with, dragging into the app,
-or pressing Ctrl+O. Finder opens files as tabs on cold launch and in a running
-app. From a terminal:
+- **macOS:** `./install-macos.sh` installs to `/Applications/ggPdf.app`.
+- **Windows (PowerShell):** `.\install-windows.ps1` installs to
+  `%LOCALAPPDATA%\Programs\ggPdf` and adds Start menu and **Open with** entries.
 
-```sh
-open -a /Applications/ggPdf.app /path/to/document.pdf
-```
+If PowerShell blocks the script, use
+`powershell -ExecutionPolicy Bypass -File .\install-windows.ps1`. Neither script
+changes your default PDF viewer.
 
-### Windows
-
-From PowerShell in the cloned repository:
-
-```powershell
-.\install-windows.ps1
-```
-
-This builds the app and installs it for the current user at
-`%LOCALAPPDATA%\Programs\ggPdf`. Run it again to update. It adds a Start menu
-shortcut and an **Open with** entry for PDFs; it does not change your default
-PDF handler. You can open PDFs with **Open with → ggPdf**, drag them into the
-window, or press Ctrl+O. If PowerShell blocks local scripts, run
-`powershell -ExecutionPolicy Bypass -File .\install-windows.ps1` from this
-repository (or `pwsh -ExecutionPolicy Bypass -File .\install-windows.ps1`).
-
-### Without installing
-
-Run the native app directly from this checkout:
+Or run without installing:
 
 ```sh
 cargo run -- assets/test-pdfs/letter.pdf
 ```
+
+### Open PDFs
+
+Use **Open with → ggPdf**, drag a PDF into the window, or press **Ctrl+O**. On
+macOS, you can also run `open -a ggPdf /path/to/document.pdf`.
 
 ## Keys
 
