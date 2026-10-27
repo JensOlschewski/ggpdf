@@ -72,12 +72,7 @@ $hadProgKey = Test-Path -LiteralPath $progKey
 $hadOpenWith = (Test-Path -LiteralPath $openWith) -and
     ((Get-Item -LiteralPath $openWith).GetValueNames() -contains $progId)
 try {
-    New-Item -ItemType Directory -Path $stage | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $stage 'pdfium') | Out-Null
-    Copy-Item -LiteralPath (Join-Path $root 'target/release/ggpdf.exe') -Destination $stage
-    Copy-Item -LiteralPath $dll -Destination (Join-Path $stage 'pdfium')
-    Copy-Item -LiteralPath (Join-Path $root 'assets') -Destination $stage -Recurse
-    Copy-Item -LiteralPath $png -Destination $stage
+    & (Join-Path $root 'scripts/build-windows-app.ps1') -Root $root -OutDir $stage
     Set-Content -LiteralPath (Join-Path $stage $marker) -Value $marker
 
     if (Test-Path -LiteralPath $app) { Move-Item -LiteralPath $app -Destination $backup }
