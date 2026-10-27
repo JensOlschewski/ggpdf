@@ -92,6 +92,11 @@ jobs:
     needs: [macos, windows]
     runs-on: ubuntu-latest
     steps:
+      # gh release create --generate-notes shells out to git to diff
+      # against the previous tag — needs a real checkout, not just the
+      # downloaded artifacts.
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
