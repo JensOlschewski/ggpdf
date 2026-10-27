@@ -22,7 +22,10 @@ DefaultGroupName=ggPdf
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
-OutputDir=.
+; Relative to this .iss file's own directory (scripts/), not the caller's
+; working directory — ".." lands the installer at the repo root, where
+; release.yml's upload-artifact step expects to find it.
+OutputDir=..
 OutputBaseFilename=ggPdf-windows-{#MyAppVersion}-setup
 Compression=lzma2
 SolidCompression=yes
