@@ -26,6 +26,11 @@ fn request_repaint(ctx: &egui::Context) {
 }
 
 impl eframe::App for SpikeApp {
+    #[cfg(target_os = "macos")]
+    fn on_exit(&mut self) {
+        crate::window::prepare_for_exit();
+    }
+
     // Only restore the outer window. Persisting egui's ScrollArea memory
     // across launches would reuse tab indices for potentially different
     // documents; per-tab scroll positions still work within one session.
