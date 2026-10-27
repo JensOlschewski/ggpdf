@@ -28,7 +28,11 @@ fn request_repaint(ctx: &egui::Context) {
 impl eframe::App for SpikeApp {
     #[cfg(target_os = "macos")]
     fn on_exit(&mut self) {
-        crate::window::prepare_for_exit();
+        // State is saved by now. Returning to winit's run-on-demand loop lets
+        // AppKit's Touch Bar finder unregister KVO observers from deallocated
+        // views and abort on Touch Bar Macs linked against older SDKs. Exit
+        // like eframe's `run_and_return: false` mode does.
+        std::process::exit(0);
     }
 
     // Only restore the outer window. Persisting egui's ScrollArea memory
