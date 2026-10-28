@@ -492,7 +492,10 @@ impl SpikeApp {
             // original (unverified) guess.
             ScrollDown => self.pending_scroll = Some(egui::vec2(0.0, -crate::viewport::SCROLL_STEP * count as f32)),
             ScrollUp => self.pending_scroll = Some(egui::vec2(0.0, crate::viewport::SCROLL_STEP * count as f32)),
-            DocumentStart => self.pending_scroll = Some(egui::vec2(0.0, SCROLL_MAX)),
+            DocumentStart => match self.page_rects.get(count.min(self.page_rects.len()).saturating_sub(1)) {
+                Some(rect) if count > 1 => self.pending_scroll = Some(egui::vec2(0.0, self.viewport_rect.min.y - rect.min.y)),
+                _ => self.pending_scroll = Some(egui::vec2(0.0, SCROLL_MAX)),
+            },
             DocumentEnd => self.pending_scroll = Some(egui::vec2(0.0, -SCROLL_MAX)),
             Close => self.close_requested = true,
             Cancel => {
