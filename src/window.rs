@@ -47,7 +47,7 @@ pub fn bundled_resources() -> Option<PathBuf> {
 /// Found live: the Dock/app-switcher icon after launching the installed
 /// app was egui's generic icon, not `ggPdf.icns`.
 pub fn load_app_icon() -> Option<egui::IconData> {
-    let candidates = [bundled_resources().map(|r| r.join("icon.png")), Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icon.png"))];
+    let candidates = [bundled_resources().map(|r| r.join("icon.png")), Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/icons/icon.png"))];
     for path in candidates.into_iter().flatten() {
         if let Ok(image) = image::open(&path) {
             let rgba = image.to_rgba8();
@@ -87,7 +87,7 @@ mod window_options_tests {
 
     #[test]
     fn app_icon_loads_from_the_dev_checkout_so_cargo_run_also_gets_it() {
-        let icon = load_app_icon().expect("icon.png should decode from the repo root");
+        let icon = load_app_icon().expect("icon.png should decode from assets/icons");
         assert!(icon.width > 0 && icon.height > 0);
         assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
     }

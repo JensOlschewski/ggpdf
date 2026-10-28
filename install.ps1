@@ -8,7 +8,7 @@ if ($PSVersionTable.PSEdition -eq 'Core' -and -not $IsWindows) {
 
 $root = $PSScriptRoot
 $dll = Join-Path $root 'pdfium/pdfium.dll'
-$png = Join-Path $root 'icon.png'
+$png = Join-Path $root 'assets/icons/icon.png'
 foreach ($file in @($dll, $png)) {
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
         throw "Missing $file"

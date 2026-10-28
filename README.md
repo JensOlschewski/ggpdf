@@ -4,7 +4,7 @@ Heavily vibecoded minimal keyboard-driven PDF viewer with Vim-style motions and
 text selection, based on PDFium engine.
 
 <p align="center">
-  <img src="icon.svg" alt="ggPdf icon" width="96">
+  <img src="assets/icons/icon.svg" alt="ggPdf icon" width="96">
 </p>
 
 | Cursormode                                                  | Darkmode                                                  |
@@ -35,12 +35,12 @@ cd ggpdf
 
 Build and install (rerun to update):
 
-- **macOS:** `./install-macos.sh` installs to `/Applications/ggPdf.app`.
-- **Windows (PowerShell):** `.\install-windows.ps1` installs to
+- **macOS:** `./install.sh` installs to `/Applications/ggPdf.app`.
+- **Windows (PowerShell):** `.\install.ps1` installs to
   `%LOCALAPPDATA%\Programs\ggPdf` and adds Start menu and **Open with** entries.
 
 If PowerShell blocks the script, use
-`powershell -ExecutionPolicy Bypass -File .\install-windows.ps1`. Neither script
+`powershell -ExecutionPolicy Bypass -File .\install.ps1`. Neither script
 changes your default PDF viewer.
 
 Or run without installing:

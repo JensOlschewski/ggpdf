@@ -27,8 +27,8 @@ if [ ! -f "$ROOT/pdfium/libpdfium.dylib" ]; then
     echo "Missing $ROOT/pdfium/libpdfium.dylib" >&2
     exit 1
 fi
-if [ ! -f "$ROOT/icon.png" ]; then
-    echo "Missing $ROOT/icon.png (run: sips -s format png -z 256 256 icon.icns --out icon.png)" >&2
+if [ ! -f "$ROOT/assets/icons/icon.png" ]; then
+    echo "Missing $ROOT/assets/icons/icon.png (run: sips -s format png -z 256 256 assets/icons/icon.icns --out assets/icons/icon.png)" >&2
     exit 1
 fi
 

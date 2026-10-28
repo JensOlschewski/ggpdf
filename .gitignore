@@ -7,6 +7,3 @@ __pycache__/
 /pdfium/*.dylib
 /pdfium/*.so
 /pdfium/*.dll
-/native/target/
-/native/debug_out/
-/native/pdfium/*.dylib
