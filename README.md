@@ -35,12 +35,12 @@ cd ggpdf
 
 Build and install (rerun to update):
 
-- **macOS:** `./install-macos.sh` installs to `/Applications/ggPdf.app`.
-- **Windows (PowerShell):** `.\install-windows.ps1` installs to
+- **macOS:** `./install.sh` installs to `/Applications/ggPdf.app`.
+- **Windows (PowerShell):** `.\install.ps1` installs to
   `%LOCALAPPDATA%\Programs\ggPdf` and adds Start menu and **Open with** entries.
 
 If PowerShell blocks the script, use
-`powershell -ExecutionPolicy Bypass -File .\install-windows.ps1`. Neither script
+`powershell -ExecutionPolicy Bypass -File .\install.ps1`. Neither script
 changes your default PDF viewer.
 
 Or run without installing:

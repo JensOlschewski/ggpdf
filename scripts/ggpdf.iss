@@ -44,9 +44,9 @@ Source: "{#BuildDir}\icon.png"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{group}\ggPdf"; Filename: "{app}\ggpdf.exe"; IconFilename: "{app}\ggpdf.exe"
 
 [Registry]
-; Mirrors install-windows.ps1's $progId/$progKey/$command exactly.
+; Mirrors install.ps1's $progId/$progKey/$command exactly.
 Root: HKCU; Subkey: "Software\Classes\ggPdf.Native.PDF"; ValueType: string; ValueName: ""; ValueData: "ggPdf PDF document"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\ggPdf.Native.PDF\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\ggpdf.exe"" ""%1"""
 Root: HKCU; Subkey: "Software\Classes\ggPdf.Native.PDF\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\ggpdf.exe,0"
-; "Open with", NOT the default handler — matches install-windows.ps1's own comment.
+; "Open with", NOT the default handler — matches install.ps1's own comment.
 Root: HKCU; Subkey: "Software\Classes\.pdf\OpenWithProgids"; ValueType: string; ValueName: "ggPdf.Native.PDF"; ValueData: ""; Flags: uninsdeletevalue

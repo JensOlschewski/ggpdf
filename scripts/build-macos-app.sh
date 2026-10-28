@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds a ready-to-run ggPdf.app bundle at OUT_APP from an already-built
 # `target/release/ggpdf` binary. Pure bundling — no cargo build, no install
-# destination, no legacy-app handling: install-macos.sh wraps this for a
+# destination, no legacy-app handling: install.sh wraps this for a
 # system install, and the release workflow wraps it to zip for distribution.
 # Overwrites OUT_APP if it already exists.
 set -eu
