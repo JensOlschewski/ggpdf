@@ -47,7 +47,7 @@
 //! stale result overwrite a newer one.
 
 use crate::document::Document;
-use crate::viewer::{prepare_page, PreparedPage};
+use crate::viewer::{prepare_page, prepare_tile, PreparedPage, PreparedTile};
 use eframe::egui;
 use std::collections::HashMap;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
@@ -74,8 +74,32 @@ pub struct RenderResult {
     pub prepared: PreparedPage,
 }
 
+/// A viewport-window render (`viewer::prepare_tile`). `generation` is
+/// compared with the live `tile_generation` when the worker picks the
+/// job: a mismatch means the view moved on, so the render is skipped.
+pub struct TileJobSpec {
+    pub scale: f32,
+    pub window: (i32, i32, i32, i32),
+    pub dark: bool,
+    pub generation: u64,
+    pub document: Arc<Document<'static>>,
+}
+
+/// `tile` is `None` when the job was skipped as stale or failed, so the
+/// UI can always clear its pending marker for `(tab, page, generation)`.
+pub struct TileResult {
+    pub tab: usize,
+    pub page: usize,
+    pub generation: u64,
+    pub tile: Option<PreparedTile>,
+}
+
 struct SharedState {
     queue: HashMap<JobKey, RenderJobSpec>,
+    /// Tile jobs always run before full-page jobs: they are what the
+    /// user sees, and they are small.
+    tile_queue: HashMap<JobKey, TileJobSpec>,
+    tile_generation: u64,
     /// `(tab, page)` the UI considers "current" right now — `main.rs`
     /// calls `set_focus` every frame via `progressive_render`. Read by
     /// the worker each time it needs to pick the next job, not just at
@@ -89,7 +113,7 @@ struct SharedState {
 /// render eventually, just never ahead of whatever the visible tab
 /// still needs) — pulled out of the worker loop so the priority rule
 /// itself has direct unit tests independent of thread timing.
-fn pick_next(queue: &HashMap<JobKey, RenderJobSpec>, focus: (usize, usize)) -> Option<JobKey> {
+fn pick_next<V>(queue: &HashMap<JobKey, V>, focus: (usize, usize)) -> Option<JobKey> {
     queue
         .keys()
         .copied()
@@ -104,6 +128,7 @@ pub struct RenderWorker {
     state: Arc<Mutex<SharedState>>,
     work_available: Arc<Condvar>,
     results: mpsc::Receiver<RenderResult>,
+    tile_results: mpsc::Receiver<TileResult>,
     repaint: Arc<Mutex<Option<egui::Context>>>,
 }
 
@@ -113,9 +138,10 @@ impl RenderWorker {
     /// makes moving a job across threads possible without a lifetime
     /// that would outlive the thread itself.
     pub fn spawn() -> RenderWorker {
-        let state = Arc::new(Mutex::new(SharedState { queue: HashMap::new(), focus: (0, 0) }));
+        let state = Arc::new(Mutex::new(SharedState { queue: HashMap::new(), tile_queue: HashMap::new(), tile_generation: 0, focus: (0, 0) }));
         let work_available = Arc::new(Condvar::new());
         let (result_tx, result_rx) = mpsc::channel::<RenderResult>();
+        let (tile_tx, tile_rx) = mpsc::channel::<TileResult>();
         let repaint = Arc::new(Mutex::new(None::<egui::Context>));
 
         let thread_state = state.clone();
@@ -124,17 +150,35 @@ impl RenderWorker {
         std::thread::Builder::new()
             .name("ggpdf-render".to_string())
             .spawn(move || loop {
-                let (key, spec) = {
+                let picked = {
                     let mut guard = thread_state.lock().unwrap();
                     loop {
+                        if let Some(key) = pick_next(&guard.tile_queue, guard.focus) {
+                            let spec = guard.tile_queue.remove(&key).expect("pick_next only returns keys present in the map");
+                            let stale = spec.generation != guard.tile_generation;
+                            break Err((key, spec, stale));
+                        }
                         if let Some(key) = pick_next(&guard.queue, guard.focus) {
                             let spec = guard.queue.remove(&key).expect("pick_next only returns keys present in the map");
-                            break (key, spec);
+                            break Ok((key, spec));
                         }
                         // Releases the lock while idle; `submit` holds it
                         // only to insert and notify, so this never misses
                         // a wakeup.
                         guard = thread_cv.wait(guard).unwrap();
+                    }
+                };
+                let (key, spec) = match picked {
+                    Ok(job) => job,
+                    Err((key, spec, stale)) => {
+                        let tile = if stale { None } else { prepare_tile(&spec.document, key.page, spec.scale, spec.window, spec.dark).ok() };
+                        let result = TileResult { tab: key.tab, page: key.page, generation: spec.generation, tile };
+                        if tile_tx.send(result).is_ok() {
+                            if let Some(ctx) = thread_repaint.lock().unwrap().as_ref() {
+                                ctx.request_repaint();
+                            }
+                        }
+                        continue;
                     }
                 };
                 let prepared = prepare_page(&spec.document, key.page, spec.requested_scale, spec.max_texture_side);
@@ -148,7 +192,25 @@ impl RenderWorker {
             })
             .expect("spawn render worker thread");
 
-        RenderWorker { state, work_available, results: result_rx, repaint }
+        RenderWorker { state, work_available, results: result_rx, tile_results: tile_rx, repaint }
+    }
+
+    /// Queues a viewport-window render, replacing any not-yet-started
+    /// tile request for the same page.
+    pub fn submit_tile(&self, tab: usize, page: usize, spec: TileJobSpec) {
+        let mut guard = self.state.lock().unwrap();
+        guard.tile_queue.insert(JobKey { tab, page }, spec);
+        self.work_available.notify_one();
+    }
+
+    /// Marks every tile job with a different `generation` as stale. Call
+    /// when zoom or scroll changes the wanted window.
+    pub fn set_tile_generation(&self, generation: u64) {
+        self.state.lock().unwrap().tile_generation = generation;
+    }
+
+    pub fn poll_tile(&self) -> Option<TileResult> {
+        self.tile_results.try_recv().ok()
     }
 
     /// An egui context can safely be used from the render thread to wake
@@ -247,7 +309,7 @@ mod pick_next_tests {
 
     #[test]
     fn empty_queue_has_nothing_to_pick() {
-        assert_eq!(pick_next(&HashMap::new(), (0, 0)), None);
+        assert_eq!(pick_next::<()>(&HashMap::new(), (0, 0)), None);
     }
 }
 
@@ -282,6 +344,41 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].tab, 0);
         assert_eq!(results[0].prepared.index, 0);
+    }
+
+    fn tile_spec(doc: &Arc<Document<'static>>, generation: u64) -> TileJobSpec {
+        TileJobSpec { scale: 2.0, window: (10, 20, 100, 50), dark: false, generation, document: doc.clone() }
+    }
+
+    fn wait_for_tile(worker: &RenderWorker) -> TileResult {
+        for _ in 0..1000 {
+            if let Some(result) = worker.poll_tile() {
+                return result;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("no tile result");
+    }
+
+    #[test]
+    fn tile_job_renders_only_the_requested_window() {
+        let doc = Arc::new(test_library().open("assets/test-pdfs/letter.pdf").expect("open doc"));
+        let worker = RenderWorker::spawn();
+        worker.submit_tile(0, 0, tile_spec(&doc, 0));
+        let result = wait_for_tile(&worker);
+        let tile = result.tile.expect("tile rendered");
+        assert_eq!((tile.image.width(), tile.image.height()), (100, 50));
+    }
+
+    #[test]
+    fn stale_tile_job_is_skipped_but_still_reported() {
+        let doc = Arc::new(test_library().open("assets/test-pdfs/letter.pdf").expect("open doc"));
+        let worker = RenderWorker::spawn();
+        worker.set_tile_generation(5);
+        worker.submit_tile(0, 0, tile_spec(&doc, 4));
+        let result = wait_for_tile(&worker);
+        assert_eq!(result.generation, 4);
+        assert!(result.tile.is_none());
     }
 
     #[test]

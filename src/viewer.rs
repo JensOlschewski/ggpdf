@@ -99,6 +99,33 @@ impl PreparedPage {
     }
 }
 
+/// One viewport-sized window of a page, single theme. Pixel window
+/// (`x`, `y`, `width`, `height`) is in the full page bitmap at `scale`.
+pub struct PreparedTile {
+    pub image: image::RgbaImage,
+    pub x: i32,
+    pub y: i32,
+    pub scale: f32,
+}
+
+/// Renders just a pixel window of page `index`, applying the dark filter
+/// only when `dark`. Window is clamped to the page bitmap. No text work.
+pub fn prepare_tile(doc: &Document, index: usize, scale: f32, window: (i32, i32, i32, i32), dark: bool) -> Result<PreparedTile, DocumentError> {
+    let page = doc.page(index as u16)?;
+    let size = page.size();
+    let full_w = (size.width_pt * scale) as i32;
+    let full_h = (size.height_pt * scale) as i32;
+    let x = window.0.clamp(0, full_w.max(1) - 1);
+    let y = window.1.clamp(0, full_h.max(1) - 1);
+    let width = window.2.min(full_w - x).max(1);
+    let height = window.3.min(full_h - y).max(1);
+    let mut image = page.render_region(scale, x, y, width, height)?;
+    if dark {
+        apply_dark_filter(&mut image);
+    }
+    Ok(PreparedTile { image, x, y, scale })
+}
+
 /// Rasterizes page `index` and extracts its text geometry — the part of
 /// `Viewer::render_page` with no `egui::Context` dependency, factored
 /// out so `render_worker.rs`'s background thread can call it directly.
@@ -250,7 +277,7 @@ impl Viewer {
     /// never report "done" once `progressive_render`'s eviction is
     /// active — see its own comment); kept as a simple, direct check
     /// for tests.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn next_unrendered(&self) -> Option<usize> {
         self.pages.iter().position(|p| p.rendered.is_none())
     }
@@ -271,7 +298,7 @@ impl Viewer {
     /// `PreparedPage::into_rendered` instead — this synchronous,
     /// UI-thread-blocking path is kept for tests, which don't need a
     /// background thread for a single-page smoke check.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn render_page(&mut self, doc: &Document, index: usize, pixels_per_point: f32, max_texture_side: usize, ctx: &egui::Context) {
         if self.pages[index].rendered.is_some() {
             return;

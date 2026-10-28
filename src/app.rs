@@ -91,7 +91,6 @@ impl<'lib> App<'lib> {
     ///
     /// Not yet wired to a key in `main.rs`'s spike UI — no close-tab
     /// binding exists there yet (only whole-app close via `q`/`Esc`).
-    #[allow(dead_code)]
     pub fn close_active(&mut self) {
         if self.docs.is_empty() {
             return;

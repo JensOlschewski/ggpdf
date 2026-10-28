@@ -12,8 +12,24 @@ use crate::viewport::{to_egui_rect, ZoomAnchor, SCALE, SCROLL_MAX};
 use crate::window::bundled_resources;
 use crate::{app, config, input, selection, text};
 use eframe::egui;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+const TILE_DEBOUNCE: Duration = Duration::from_millis(120);
+
+/// A rendered pixel window of one page at `scale` pixels per PDF point,
+/// single theme. (`x`, `y`, `w`, `h`) are pixels in the full page bitmap.
+pub struct Tile {
+    pub texture: egui::TextureHandle,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub scale: f32,
+    pub dark: bool,
+}
 
 fn is_pdf_path(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
@@ -63,6 +79,15 @@ pub struct SpikeApp {
     pub page_rects: Vec<egui::Rect>,
     pub viewport_rect: egui::Rect,
     pub pending_zoom_anchor: Option<ZoomAnchor>,
+    /// Viewport-window textures, keyed by (tab, page). See `update_tiles`.
+    pub tiles: HashMap<(usize, usize), Tile>,
+    /// (tab, page) -> generation of the in-flight tile request.
+    pub tile_pending: HashMap<(usize, usize), u64>,
+    pub tile_generation: u64,
+    /// (zoom, dark) last seen, and when it last changed: tile re-renders
+    /// for a changed view wait until it has been stable for `TILE_DEBOUNCE`.
+    pub tile_view_key: (u32, bool),
+    pub tile_view_changed: Option<Instant>,
     pub close_requested: bool,
     /// Per-motion page/line/char feedback. Not rendered — `style.css`'s
     /// `.pdf-visual-status` is screen-reader-only (clip-path trick)
@@ -173,6 +198,11 @@ impl SpikeApp {
             page_rects: Vec::new(),
             viewport_rect: egui::Rect::NOTHING,
             pending_zoom_anchor: None,
+            tiles: HashMap::new(),
+            tile_pending: HashMap::new(),
+            tile_generation: 0,
+            tile_view_key: (0, false),
+            tile_view_changed: None,
             close_requested: false,
             status: String::new(),
             notice: String::new(),
@@ -824,6 +854,87 @@ impl SpikeApp {
         if nearby_ready && !viewer.sizes_requested && !viewer.pages.is_empty() {
             viewer.sizes_requested = true;
             self.spawn_page_size_measurement(tab, document, ctx.clone());
+        }
+    }
+
+    /// Keeps one viewport-sized tile per visible page current. Call after
+    /// layout (needs this frame's `page_rects`). Zoom or theme changes
+    /// bump the worker generation (dropping queued stale tiles) and wait
+    /// `TILE_DEBOUNCE` of stability before submitting; scrolling past a
+    /// tile's coverage, or a page with no tile yet, submits immediately.
+    pub fn update_tiles(&mut self, ctx: &egui::Context) {
+        self.render_worker.set_repaint_context(ctx);
+        let tab = self.app.active_index();
+
+        // Apply at most one finished tile per frame.
+        if let Some(result) = self.render_worker.poll_tile() {
+            let key = (result.tab, result.page);
+            if self.tile_pending.get(&key) == Some(&result.generation) {
+                self.tile_pending.remove(&key);
+            }
+            if let Some(tile) = result.tile
+                && result.generation == self.tile_generation
+            {
+                let (w, h) = (tile.image.width() as i32, tile.image.height() as i32);
+                let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], tile.image.as_raw());
+                let texture = ctx.load_texture(format!("tile-{}-{}", result.tab, result.page), image, egui::TextureOptions::LINEAR);
+                self.tiles.insert(key, Tile { texture, x: tile.x, y: tile.y, w, h, scale: tile.scale, dark: self.dark });
+            }
+            ctx.request_repaint();
+        }
+
+        let Some(active) = self.app.active() else { return };
+        let document = active.document.clone();
+        let ppp = ctx.pixels_per_point();
+        let scale = self.zoom * ppp;
+        let max_side = ctx.input(|i| i.max_texture_side) as i32;
+
+        let view_key = (self.zoom.to_bits(), self.dark);
+        if view_key != self.tile_view_key {
+            self.tile_view_key = view_key;
+            self.tile_view_changed = Some(Instant::now());
+            self.tile_generation += 1;
+            self.render_worker.set_tile_generation(self.tile_generation);
+        }
+        let settled = self.tile_view_changed.is_none_or(|t| t.elapsed() >= TILE_DEBOUNCE);
+
+        let viewport = self.viewport_rect;
+        let margin = egui::vec2(viewport.width() * 0.25, viewport.height() * 0.5);
+        let keep = viewport.expand2(margin * 4.0);
+        self.tiles.retain(|&(t, page), _| t == tab && self.page_rects.get(page).is_some_and(|r| r.intersects(keep)));
+
+        for (page, &rect) in self.page_rects.iter().enumerate() {
+            if !rect.intersects(viewport) {
+                continue;
+            }
+            let key = (tab, page);
+            if self.tile_pending.get(&key) == Some(&self.tile_generation) {
+                continue;
+            }
+            let to_px = |r: egui::Rect| {
+                let min = (r.min - rect.min) * ppp;
+                let max = (r.max - rect.min) * ppp;
+                (min.x.floor() as i32, min.y.floor() as i32, max.x.ceil() as i32, max.y.ceil() as i32)
+            };
+            let (vx0, vy0, vx1, vy1) = to_px(rect.intersect(viewport));
+            let covered = self.tiles.get(&key).is_some_and(|t| {
+                (t.scale - scale).abs() < 0.01 && t.dark == self.dark && t.x <= vx0 && t.y <= vy0 && t.x + t.w >= vx1 && t.y + t.h >= vy1
+            });
+            if covered || (self.tiles.contains_key(&key) && !settled) {
+                continue;
+            }
+            let (x0, y0, x1, y1) = to_px(rect.intersect(viewport.expand2(margin)));
+            let window = (x0, y0, (x1 - x0).min(max_side), (y1 - y0).min(max_side));
+            self.tile_pending.insert(key, self.tile_generation);
+            self.render_worker.submit_tile(
+                tab,
+                page,
+                render_worker::TileJobSpec { scale, window, dark: self.dark, generation: self.tile_generation, document: document.clone() },
+            );
+        }
+
+        if !settled {
+            ctx.request_repaint_after(TILE_DEBOUNCE);
         }
     }
 

@@ -409,6 +409,17 @@ impl eframe::App for SpikeApp {
                         let rect = response.rect;
                         page_rects.push(rect);
 
+                        // Sharp viewport tile over the stretched page texture.
+                        // Skipped while its theme differs from the current one.
+                        if let Some(tile) = self.tiles.get(&(self.app.active_index(), page_idx))
+                            && tile.dark == self.dark
+                        {
+                            let f = self.zoom / tile.scale;
+                            let tile_rect = egui::Rect::from_min_size(rect.min + egui::vec2(tile.x as f32, tile.y as f32) * f, egui::vec2(tile.w as f32, tile.h as f32) * f);
+                            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                            ui.painter_at(rect).image(tile.texture.id(), tile_rect, uv, egui::Color32::WHITE);
+                        }
+
                         if let Some(gutter_rect) = gutter_rect {
                             let cursor_line = self.page_cursor.filter(|_| self.active_page == Some(page_idx)).map(|c| c.line);
                             let gutter_painter = ui.painter_at(gutter_rect);
@@ -529,6 +540,7 @@ impl eframe::App for SpikeApp {
             });
         if !zoom_correction_pending {
             self.progressive_render(&ctx);
+            self.update_tiles(&ctx);
         }
     }
 }
