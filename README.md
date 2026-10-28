@@ -4,7 +4,7 @@ Heavily vibecoded minimal keyboard-driven PDF viewer with Vim-style motions and
 text selection, based on PDFium engine.
 
 <p align="center">
-  <img src="icon.svg" alt="ggPdf icon" width="96">
+  <img src="assets/icons/icon.svg" alt="ggPdf icon" width="96">
 </p>
 
 | Cursormode                                                  | Darkmode                                                  |

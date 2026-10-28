@@ -12,7 +12,7 @@ Set-StrictMode -Version Latest
 
 $exe = Join-Path $Root 'target/release/ggpdf.exe'
 $dll = Join-Path $Root 'pdfium/pdfium.dll'
-$png = Join-Path $Root 'icon.png'
+$png = Join-Path $Root 'assets/icons/icon.png'
 foreach ($file in @($exe, $dll, $png)) {
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
         throw "Missing $file"

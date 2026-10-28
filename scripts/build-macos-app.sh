@@ -23,8 +23,8 @@ if [ ! -f "$ROOT/pdfium/libpdfium.dylib" ]; then
     echo "Missing $ROOT/pdfium/libpdfium.dylib" >&2
     exit 1
 fi
-if [ ! -f "$ROOT/icon.png" ] || [ ! -f "$ROOT/icon.icns" ]; then
-    echo "Missing $ROOT/icon.png or $ROOT/icon.icns" >&2
+if [ ! -f "$ROOT/assets/icons/icon.png" ] || [ ! -f "$ROOT/assets/icons/icon.icns" ]; then
+    echo "Missing $ROOT/assets/icons/icon.png or $ROOT/assets/icons/icon.icns" >&2
     exit 1
 fi
 
@@ -33,11 +33,11 @@ mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources/pdfium"
 cp "$ROOT/target/release/ggpdf" "$BUNDLE/Contents/MacOS/ggpdf"
 cp "$ROOT/pdfium/libpdfium.dylib" "$BUNDLE/Contents/Resources/pdfium/libpdfium.dylib"
 cp -R "$ROOT/assets" "$BUNDLE/Contents/Resources/assets"
-cp "$ROOT/icon.icns" "$BUNDLE/Contents/Resources/ggPdf.icns"
+cp "$ROOT/assets/icons/icon.icns" "$BUNDLE/Contents/Resources/ggPdf.icns"
 # Decoded at runtime for the Dock/app-switcher icon (see main.rs's
 # load_app_icon doc comment — without this, eframe falls back to its own
 # generic icon and overwrites CFBundleIconFile's Dock icon with it).
-cp "$ROOT/icon.png" "$BUNDLE/Contents/Resources/icon.png"
+cp "$ROOT/assets/icons/icon.png" "$BUNDLE/Contents/Resources/icon.png"
 
 cat > "$BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
