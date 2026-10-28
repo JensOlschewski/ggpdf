@@ -333,7 +333,7 @@ impl eframe::App for SpikeApp {
                 let mut page_rects = Vec::new();
                 let mut corrected_zoom = false;
 
-                egui::ScrollArea::both().id_salt(("pdf-scroll", self.app.active_index())).animated(false).show(ui, |ui| {
+                egui::ScrollArea::both().id_salt(("pdf-scroll", self.app.active_index())).animated(false).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
                     if let Some(delta) = self.pending_scroll.take() {
                         ui.scroll_with_delta(delta);
                     }
