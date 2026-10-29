@@ -292,6 +292,25 @@ fn word_motion(lines: &[Line], cursor: Cursor, motion: Motion, count: usize) -> 
     Cursor { line, character }
 }
 
+/// The character nearest to the point `(x, y)` (page render space): the
+/// closest line by vertical distance, then the closest character on it by
+/// horizontal distance.
+pub fn nearest_cursor(lines: &[Line], x: f32, y: f32) -> Option<Cursor> {
+    let gap = |lo: f32, hi: f32, v: f32| (v - v.clamp(lo, hi)).abs();
+    let (line, _) = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| l.rect().map(|r| (i, gap(r.top, r.bottom, y))))
+        .min_by(|a, b| a.1.total_cmp(&b.1))?;
+    let (character, _) = lines[line]
+        .chars
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (i, gap(c.rect.left, c.rect.right, x)))
+        .min_by(|a, b| a.1.total_cmp(&b.1))?;
+    Some(Cursor { line, character })
+}
+
 /// `is`/`ip` in `visual.js`'s terms. Returns the inclusive `(start, end)`
 /// bounds of the text object containing `cursor`, or `None` if the page
 /// has no text to select (only possible for `sentence`).
@@ -379,7 +398,10 @@ pub fn text_object_sentence(lines: &[Line], cursor: Cursor) -> Option<(Cursor, C
                 position: Cursor { line: li, character: ci },
                 is_whitespace: c.ch.is_whitespace(),
             });
-            full_text.push(c.ch);
+            // PDF text often ends a visual line with "\r\n"; Unicode treats
+            // those as sentence separators, which cut wrapped sentences.
+            // Only `starts_paragraph` may force a boundary.
+            full_text.push(if matches!(c.ch, '\r' | '\n') { ' ' } else { c.ch });
             text_len += 1;
         }
     }
@@ -436,6 +458,25 @@ mod tests {
             out.push(line.chars[from..to].iter().map(|c| c.ch).collect::<String>());
         }
         out.join("\n")
+    }
+
+    #[test]
+    fn sentence_spans_lines_that_end_with_crlf() {
+        let lines = lines_from(&["The quick brown\r\n", "fox jumps over.\r\n"], &[]);
+        let (s, e) = text_object_sentence(&lines, Cursor { line: 1, character: 2 }).unwrap();
+        assert_eq!(s.line, 0);
+        assert_eq!(e.line, 1);
+    }
+
+    #[test]
+    fn nearest_cursor_picks_line_by_y_then_character_by_x() {
+        let lines = lines_from(&["abcd", "efgh"], &[]);
+        // Lines are 10px tall at y = 0 and 12; chars are laid out by `lines_from`.
+        let second = nearest_cursor(&lines, 0.0, 14.0).unwrap();
+        assert_eq!(second.line, 1);
+        assert_eq!(second.character, 0);
+        let far_right = nearest_cursor(&lines, 1000.0, 1.0).unwrap();
+        assert_eq!(far_right, Cursor { line: 0, character: 3 });
     }
 
     #[test]

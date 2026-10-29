@@ -6,7 +6,7 @@
 //! [`Config::default`] (which always binds `q`/`Esc` to `close`) rather
 //! than failing to start.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
@@ -24,6 +24,11 @@ pub enum Action {
     ScrollUp,
     DocumentStart,
     DocumentEnd,
+    /// Config-facing toggles. `Dispatcher::feed` resolves each to one of
+    /// the concrete mode actions below, so callers never see these.
+    CursorModeToggle,
+    VisualModeToggle,
+    VisualLineModeToggle,
     CursorMode,
     VisualMode,
     VisualLineMode,
@@ -58,9 +63,14 @@ impl Action {
         ("scroll_up", Action::ScrollUp),
         ("document_start", Action::DocumentStart),
         ("document_end", Action::DocumentEnd),
-        ("cursor_mode", Action::CursorMode),
-        ("visual_mode", Action::VisualMode),
-        ("visual_line_mode", Action::VisualLineMode),
+        ("cursor_mode_toggle", Action::CursorModeToggle),
+        ("visual_mode_toggle", Action::VisualModeToggle),
+        ("visual_line_mode_toggle", Action::VisualLineModeToggle),
+        ("document_mode", Action::NormalMode),
+        // Old names, kept as aliases.
+        ("cursor_mode", Action::CursorModeToggle),
+        ("visual_mode", Action::VisualModeToggle),
+        ("visual_line_mode", Action::VisualLineModeToggle),
         ("normal_mode", Action::NormalMode),
         ("close", Action::Close),
         ("cancel", Action::Cancel),
@@ -77,6 +87,8 @@ impl Action {
         ("line_end", Action::LineEnd),
         ("line_down", Action::LineDown),
         ("line_up", Action::LineUp),
+        ("yank_sentence", Action::CopySentence),
+        ("yank_paragraph", Action::CopyParagraph),
         ("copy_sentence", Action::CopySentence),
         ("copy_paragraph", Action::CopyParagraph),
         ("select_sentence", Action::SelectSentence),
@@ -85,6 +97,24 @@ impl Action {
         ("search_next", Action::SearchNext),
         ("search_prev", Action::SearchPrev),
     ];
+
+    /// Canonical (non-alias) names for error messages: the first name
+    /// listed for each action.
+    fn valid_names() -> String {
+        let mut seen = Vec::new();
+        let mut names = Vec::new();
+        for (name, action) in Self::ALL {
+            if !seen.contains(action) {
+                seen.push(*action);
+                names.push(*name);
+            }
+        }
+        names.join(", ")
+    }
+
+    fn name(self) -> &'static str {
+        Self::ALL.iter().find(|(_, a)| *a == self).map_or("?", |(n, _)| n)
+    }
 
     fn from_name(name: &str) -> Option<Action> {
         Self::ALL.iter().find(|(n, _)| *n == name).map(|(_, a)| *a)
@@ -112,7 +142,8 @@ impl fmt::Display for KeySeq {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Appearance {
     pub canvas_light: String,
     pub canvas_dark: String,
@@ -130,6 +161,28 @@ pub struct Appearance {
     /// and a different hue than `search` so the current match stands
     /// out among the others.
     pub search_current: String,
+    /// Brief flash over the yanked text.
+    pub yank_highlight: String,
+    /// How long the yank flash stays visible, in milliseconds.
+    pub yank_highlight_ms: u32,
+    /// Gutter and tab text sizes derive from this; the gutter is one
+    /// point smaller.
+    pub font_size: f32,
+    /// Path to a TTF/OTF file used before the built-in monospace font.
+    /// Empty = built-in only.
+    pub font_file: String,
+    pub gutter_abs_light: String,
+    pub gutter_abs_dark: String,
+    pub gutter_rel_light: String,
+    pub gutter_rel_dark: String,
+    pub gutter_current_light: String,
+    pub gutter_current_dark: String,
+    pub tab_bar_light: String,
+    pub tab_bar_dark: String,
+    pub tab_active_light: String,
+    pub tab_active_dark: String,
+    pub tab_inactive_light: String,
+    pub tab_inactive_dark: String,
 }
 
 impl Default for Appearance {
@@ -143,6 +196,22 @@ impl Default for Appearance {
             cursor: "#787878a6".to_string(),
             search: "#ffd70059".to_string(),
             search_current: "#ff8c00a6".to_string(),
+            yank_highlight: "#34a85359".to_string(),
+            yank_highlight_ms: 300,
+            font_size: 12.0,
+            font_file: String::new(),
+            gutter_abs_light: "#777777".to_string(),
+            gutter_abs_dark: "#aaaaaa".to_string(),
+            gutter_rel_light: "#777777".to_string(),
+            gutter_rel_dark: "#aaaaaa".to_string(),
+            gutter_current_light: "#d93025".to_string(),
+            gutter_current_dark: "#d93025".to_string(),
+            tab_bar_light: "#ededed".to_string(),
+            tab_bar_dark: "#282828".to_string(),
+            tab_active_light: "#d93025".to_string(),
+            tab_active_dark: "#d93025".to_string(),
+            tab_inactive_light: "#333333".to_string(),
+            tab_inactive_dark: "#cccccc".to_string(),
         }
     }
 }
@@ -157,112 +226,158 @@ pub enum Mode {
     VisualLine,
 }
 
-impl Mode {
-    fn from_toml_key(key: &str) -> Option<Mode> {
-        match key {
-            "normal" => Some(Mode::Normal),
-            "cursor" => Some(Mode::Cursor),
-            "visual" => Some(Mode::Visual),
-            "visual_line" => Some(Mode::VisualLine),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Config {
     pub appearance: Appearance,
+    tables: KeyTables,
     /// mode -> key sequence -> action
     pub keys: HashMap<Mode, HashMap<String, Action>>,
 }
 
+/// The four `[keys.*]` tables as written in the config file.
+/// `document` is Normal mode. Cursor mode is `motion` + `cursor`;
+/// Visual and VisualLine are `motion` + `selection`. A mode's own table
+/// wins over `motion` for the same sequence.
+#[derive(Debug, Clone)]
+struct KeyTables {
+    document: HashMap<String, Action>,
+    motion: HashMap<String, Action>,
+    cursor: HashMap<String, Action>,
+    selection: HashMap<String, Action>,
+}
+
+fn table(pairs: &[(&str, Action)]) -> HashMap<String, Action> {
+    pairs.iter().map(|(k, a)| (k.to_string(), *a)).collect()
+}
+
+impl Default for KeyTables {
+    fn default() -> Self {
+        use Action::*;
+        Self {
+            // `/`/`?` aren't bindings: typing a search query is free text
+            // handled directly in `main.rs`'s event loop.
+            document: table(&[
+                ("j", ScrollDown),
+                ("k", ScrollUp),
+                ("g g", DocumentStart),
+                ("G", DocumentEnd),
+                ("c", CursorModeToggle),
+                ("v", VisualModeToggle),
+                ("V", VisualLineModeToggle),
+                ("n", SearchNext),
+                ("N", SearchPrev),
+                ("y i s", CopySentence),
+                ("y i p", CopyParagraph),
+                ("q", Close),
+                ("Esc", Close),
+            ]),
+            // j/k move the text cursor a visual line here, unlike
+            // `document` where they scroll.
+            motion: table(&[
+                ("h", CharacterLeft),
+                ("l", CharacterRight),
+                ("j", LineDown),
+                ("k", LineUp),
+                ("w", WordForward),
+                ("b", WordBackward),
+                ("e", WordEnd),
+                ("W", BigWordForward),
+                ("B", BigWordBackward),
+                ("E", BigWordEnd),
+                ("0", LineStart),
+                ("^", LineFirstNonBlank),
+                ("$", LineEnd),
+                ("n", SearchNext),
+                ("N", SearchPrev),
+                ("v", VisualModeToggle),
+                ("V", VisualLineModeToggle),
+                ("Esc", NormalMode),
+            ]),
+            // `y` is unbound here, so `y i s` is a legal sequence.
+            cursor: table(&[("y i s", CopySentence), ("y i p", CopyParagraph)]),
+            // `y` is bound here, so no `y ...` sequence may exist.
+            selection: table(&[
+                ("y", Yank),
+                ("i s", SelectSentence),
+                ("i p", SelectParagraph),
+            ]),
+        }
+    }
+}
+
+impl KeyTables {
+    /// Per-mode bindings after merging, with prefix validation.
+    fn resolve(&self) -> Result<HashMap<Mode, HashMap<String, Action>>, ConfigError> {
+        let merged = |own: &HashMap<String, Action>| {
+            let mut m = self.motion.clone();
+            m.extend(own.iter().map(|(k, a)| (k.clone(), *a)));
+            m
+        };
+        let mut keys = HashMap::new();
+        keys.insert(Mode::Normal, self.document.clone());
+        keys.insert(Mode::Cursor, merged(&self.cursor));
+        keys.insert(Mode::Visual, merged(&self.selection));
+        keys.insert(Mode::VisualLine, merged(&self.selection));
+        for (mode, bindings) in &keys {
+            check_prefixes(mode_label(*mode), bindings)?;
+        }
+        Ok(keys)
+    }
+}
+
+fn mode_label(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Normal => "document",
+        Mode::Cursor => "cursor",
+        Mode::Visual => "visual",
+        Mode::VisualLine => "visual_line",
+    }
+}
+
+fn check_prefixes(label: &str, bindings: &HashMap<String, Action>) -> Result<(), ConfigError> {
+    let seqs: Vec<KeySeq> = bindings.keys().map(|k| KeySeq::parse(k)).collect();
+    for shorter in &seqs {
+        if let Some(longer) = seqs.iter().find(|s| shorter.is_prefix_of(s)) {
+            return Err(ConfigError::AmbiguousPrefix {
+                mode: label.to_string(),
+                shorter: shorter.to_string(),
+                longer: longer.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 impl Default for Config {
     fn default() -> Self {
-        let mut normal = HashMap::new();
-        normal.insert("j".to_string(), Action::ScrollDown);
-        normal.insert("k".to_string(), Action::ScrollUp);
-        normal.insert("g g".to_string(), Action::DocumentStart);
-        normal.insert("G".to_string(), Action::DocumentEnd);
-        normal.insert("c".to_string(), Action::CursorMode);
-        normal.insert("v".to_string(), Action::VisualMode);
-        normal.insert("V".to_string(), Action::VisualLineMode);
-        normal.insert("q".to_string(), Action::Close);
-        normal.insert("Esc".to_string(), Action::Close);
-        // `/`/`?` themselves aren't config-driven bindings — typing a
-        // search query is free text, not a vim-style sequence lookup —
-        // but `n`/`N` repeating the last one are ordinary motions, same
-        // as every other key here. See `main.rs`'s direct `/`/`?`
-        // handling in its event loop.
-        normal.insert("n".to_string(), Action::SearchNext);
-        normal.insert("N".to_string(), Action::SearchPrev);
-
-        let mut cursor = HashMap::new();
-        cursor.insert("h".to_string(), Action::CharacterLeft);
-        cursor.insert("l".to_string(), Action::CharacterRight);
-        cursor.insert("w".to_string(), Action::WordForward);
-        cursor.insert("b".to_string(), Action::WordBackward);
-        cursor.insert("e".to_string(), Action::WordEnd);
-        cursor.insert("W".to_string(), Action::BigWordForward);
-        cursor.insert("B".to_string(), Action::BigWordBackward);
-        cursor.insert("E".to_string(), Action::BigWordEnd);
-        cursor.insert("0".to_string(), Action::LineStart);
-        cursor.insert("^".to_string(), Action::LineFirstNonBlank);
-        cursor.insert("$".to_string(), Action::LineEnd);
-        // Cursor mode's j/k move the text cursor a visual line, distinct
-        // from Normal mode's j/k which scroll the document.
-        cursor.insert("j".to_string(), Action::LineDown);
-        cursor.insert("k".to_string(), Action::LineUp);
-        cursor.insert("y i s".to_string(), Action::CopySentence);
-        cursor.insert("y i p".to_string(), Action::CopyParagraph);
-        // v/V start marking from the cursor's current position, matching
-        // visual.js (where v/V are recognized in any active state, not
-        // just from a separate "Normal" state) — without these, marking
-        // was only reachable by first returning all the way to Normal
-        // mode, losing the cursor's navigated-to position in the process.
-        cursor.insert("v".to_string(), Action::VisualMode);
-        cursor.insert("V".to_string(), Action::VisualLineMode);
-        cursor.insert("n".to_string(), Action::SearchNext);
-        cursor.insert("N".to_string(), Action::SearchPrev);
-        cursor.insert("Esc".to_string(), Action::NormalMode);
-
-        // Visual/VisualLine inherit every Cursor-mode motion (h/j/k/l/
-        // word motions/line motions) so the mark can actually be
-        // extended — the old defaults only bound Esc and y here, so
-        // every motion key silently dead-ended once marking started.
-        // Inheritance also includes n/N: same-page jumps extend the mark.
-        let mut visual = cursor.clone();
-        visual.insert("v".to_string(), Action::CursorMode); // toggle off: deselect, stay in Cursor mode
-        visual.insert("V".to_string(), Action::VisualLineMode); // switch to linewise
-        visual.insert("y".to_string(), Action::Yank);
-        // Plain is/ip (no leading y) replace the mark with the text
-        // object without yanking — matches visual.js, where "i" only
-        // starts this sequence while already marking (`this.marking`);
-        // "y i s"/"y i p" above cover the yank-directly case, reachable
-        // from Cursor mode too since not gated on marking.
-        visual.insert("i s".to_string(), Action::SelectSentence);
-        visual.insert("i p".to_string(), Action::SelectParagraph);
-
-        let mut visual_line = cursor.clone();
-        visual_line.insert("V".to_string(), Action::CursorMode); // toggle off
-        visual_line.insert("v".to_string(), Action::VisualMode); // switch to charwise
-        visual_line.insert("y".to_string(), Action::Yank);
-        visual_line.insert("i s".to_string(), Action::SelectSentence);
-        visual_line.insert("i p".to_string(), Action::SelectParagraph);
-
-        let mut keys = HashMap::new();
-        keys.insert(Mode::Normal, normal);
-        keys.insert(Mode::Cursor, cursor);
-        keys.insert(Mode::Visual, visual);
-        keys.insert(Mode::VisualLine, visual_line);
-
+        let tables = KeyTables::default();
         Self {
             appearance: Appearance::default(),
-            keys,
+            keys: tables.resolve().expect("default key tables are valid"),
+            tables,
         }
     }
 }
 
 impl Config {
+    /// The resolved config as TOML that loads back to the same config.
+    pub fn to_toml(&self) -> String {
+        let mut out = String::from("[appearance]\n");
+        out.push_str(&toml::to_string(&self.appearance).expect("appearance serializes"));
+        for (name, table) in [
+            ("document", &self.tables.document),
+            ("motion", &self.tables.motion),
+            ("cursor", &self.tables.cursor),
+            ("selection", &self.tables.selection),
+        ] {
+            out.push_str(&format!("\n[keys.{name}]\n"));
+            let mut lines: Vec<_> = table.iter().map(|(seq, a)| format!("\"{seq}\" = \"{}\"\n", a.name())).collect();
+            lines.sort();
+            out.extend(lines);
+        }
+        out
+    }
+
     /// Emergency close/cancel must stay reachable even in a from-scratch
     /// config; this is true of [`Config::default`] by construction, but
     /// also double-checked by [`validate`] on any user-supplied config.
@@ -279,36 +394,9 @@ impl Config {
 #[derive(Debug, Deserialize, Default)]
 struct RawConfig {
     #[serde(default)]
-    appearance: RawAppearance,
+    appearance: Appearance,
     #[serde(default)]
     keys: HashMap<String, HashMap<String, String>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawAppearance {
-    canvas_light: Option<String>,
-    canvas_dark: Option<String>,
-    page_gap: Option<u32>,
-    gutter_width: Option<u32>,
-    selection: Option<String>,
-    cursor: Option<String>,
-    search: Option<String>,
-    search_current: Option<String>,
-}
-
-impl Default for RawAppearance {
-    fn default() -> Self {
-        Self {
-            canvas_light: None,
-            canvas_dark: None,
-            page_gap: None,
-            gutter_width: None,
-            selection: None,
-            cursor: None,
-            search: None,
-            search_current: None,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -327,11 +415,12 @@ impl fmt::Display for ConfigError {
             ConfigError::Io(e) => write!(f, "could not read config file: {e}"),
             ConfigError::Parse(e) => write!(f, "could not parse config TOML: {e}"),
             ConfigError::UnknownMode { mode } => {
-                write!(f, "unknown key mode [keys.{mode}] (expected one of: normal, cursor, visual, visual_line)")
+                write!(f, "unknown key mode [keys.{mode}] (expected one of: document, motion, cursor, selection)")
             }
             ConfigError::UnknownAction { mode, sequence, action } => write!(
                 f,
-                "[keys.{mode}] \"{sequence}\" = \"{action}\": unknown action \"{action}\""
+                "[keys.{mode}] \"{sequence}\" = \"{action}\": unknown action \"{action}\" (valid actions: {})",
+                Action::valid_names()
             ),
             ConfigError::AmbiguousPrefix { mode, shorter, longer } => write!(
                 f,
@@ -348,69 +437,47 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 fn convert(raw: RawConfig) -> Result<Config, ConfigError> {
-    let defaults = Appearance::default();
-    let appearance = Appearance {
-        canvas_light: raw.appearance.canvas_light.unwrap_or(defaults.canvas_light),
-        canvas_dark: raw.appearance.canvas_dark.unwrap_or(defaults.canvas_dark),
-        page_gap: raw.appearance.page_gap.unwrap_or(defaults.page_gap),
-        gutter_width: raw.appearance.gutter_width.unwrap_or(defaults.gutter_width),
-        selection: raw.appearance.selection.unwrap_or(defaults.selection),
-        cursor: raw.appearance.cursor.unwrap_or(defaults.cursor),
-        search: raw.appearance.search.unwrap_or(defaults.search),
-        search_current: raw.appearance.search_current.unwrap_or(defaults.search_current),
+    let mut tables = KeyTables::default();
+    let parse_table = |name: &str, bindings: &HashMap<String, String>| {
+        bindings
+            .iter()
+            .map(|(seq, action_name)| {
+                Action::from_name(action_name)
+                    .map(|a| (seq.clone(), a))
+                    .ok_or_else(|| ConfigError::UnknownAction {
+                        mode: name.to_string(),
+                        sequence: seq.clone(),
+                        action: action_name.clone(),
+                    })
+            })
+            .collect::<Result<HashMap<_, _>, _>>()
     };
 
-    let mut keys: HashMap<Mode, HashMap<String, Action>> = HashMap::new();
-
-    for (mode_name, bindings) in &raw.keys {
-        let mode = Mode::from_toml_key(mode_name).ok_or_else(|| ConfigError::UnknownMode {
-            mode: mode_name.clone(),
-        })?;
-
-        let mut mode_keys = HashMap::new();
-        let mut seqs: Vec<KeySeq> = Vec::new();
-
-        for (seq_str, action_name) in bindings {
-            let action = Action::from_name(action_name).ok_or_else(|| ConfigError::UnknownAction {
-                mode: mode_name.clone(),
-                sequence: seq_str.clone(),
-                action: action_name.clone(),
-            })?;
-
-            let seq = KeySeq::parse(seq_str);
-            for existing in &seqs {
-                if existing.is_prefix_of(&seq) {
-                    return Err(ConfigError::AmbiguousPrefix {
-                        mode: mode_name.clone(),
-                        shorter: existing.to_string(),
-                        longer: seq.to_string(),
-                    });
-                }
-                if seq.is_prefix_of(existing) {
-                    return Err(ConfigError::AmbiguousPrefix {
-                        mode: mode_name.clone(),
-                        shorter: seq.to_string(),
-                        longer: existing.to_string(),
-                    });
-                }
-            }
-            seqs.push(seq);
-
-            mode_keys.insert(seq_str.clone(), action);
+    for (name, bindings) in &raw.keys {
+        let parsed = parse_table(name, bindings)?;
+        match name.as_str() {
+            "document" | "normal" => tables.document = parsed,
+            "motion" => tables.motion = parsed,
+            "cursor" => tables.cursor = parsed,
+            "selection" => tables.selection = parsed,
+            "visual" | "visual_line" => {}
+            _ => return Err(ConfigError::UnknownMode { mode: name.clone() }),
         }
-
-        keys.insert(mode, mode_keys);
     }
 
-    // Any mode the user didn't touch keeps the built-in bindings for that
-    // mode, so a config that only overrides [keys.normal] doesn't lose
-    // cursor/visual motions entirely.
-    let defaults = Config::default();
-    for (mode, default_keys) in defaults.keys {
-        keys.entry(mode).or_insert(default_keys);
+    // Old [keys.visual] / [keys.visual_line] both map to `selection`.
+    if let Some(bindings) = raw.keys.get("visual").or_else(|| raw.keys.get("visual_line")) {
+        tables.selection = parse_table("visual", bindings)?;
+        if let (Some(v), Some(l)) = (raw.keys.get("visual"), raw.keys.get("visual_line")) {
+            if v != l {
+                eprintln!("ggpdf: [keys.visual] and [keys.visual_line] differ; both are now [keys.selection], using [keys.visual]");
+            }
+        }
     }
 
-    let config = Config { appearance, keys };
+    let keys = tables.resolve()?;
+
+    let config = Config { appearance: raw.appearance, tables, keys };
 
     if !config.has_emergency_close() {
         return Err(ConfigError::NoEmergencyClose);
@@ -500,14 +567,23 @@ mod tests {
     }
 
     #[test]
+    fn example_config_matches_defaults() {
+        let raw: RawConfig = toml::from_str(include_str!("../config.example.toml")).unwrap();
+        let config = convert(raw).unwrap();
+        let defaults = Config::default();
+        assert_eq!(config.keys, defaults.keys);
+        assert_eq!(format!("{:?}", config.appearance), format!("{:?}", defaults.appearance));
+    }
+
+    #[test]
     fn cursor_mode_can_enter_visual_modes() {
         // Regression check: v/V were only bound in Normal mode, so
         // starting to mark from an already-navigated cursor position was
         // impossible without first returning all the way to Normal.
         let config = Config::default();
         let cursor = &config.keys[&Mode::Cursor];
-        assert_eq!(cursor.get("v"), Some(&Action::VisualMode));
-        assert_eq!(cursor.get("V"), Some(&Action::VisualLineMode));
+        assert_eq!(cursor.get("v"), Some(&Action::VisualModeToggle));
+        assert_eq!(cursor.get("V"), Some(&Action::VisualLineModeToggle));
     }
 
     #[test]
@@ -518,6 +594,52 @@ mod tests {
             assert_eq!(bindings.get("n"), Some(&Action::SearchNext), "{mode:?}");
             assert_eq!(bindings.get("N"), Some(&Action::SearchPrev), "{mode:?}");
         }
+    }
+
+    #[test]
+    fn mode_table_wins_over_motion() {
+        let raw: RawConfig = toml::from_str(
+            r#"
+            [keys.cursor]
+            "w" = "word_end"
+            "#,
+        )
+        .unwrap();
+        let config = convert(raw).unwrap();
+        assert_eq!(config.keys[&Mode::Cursor]["w"], Action::WordEnd);
+        assert_eq!(config.keys[&Mode::Visual]["w"], Action::WordForward);
+    }
+
+    #[test]
+    fn document_does_not_inherit_motion() {
+        let config = Config::default();
+        assert!(!config.keys[&Mode::Normal].contains_key("w"));
+        assert_eq!(config.keys[&Mode::Cursor]["w"], Action::WordForward);
+    }
+
+    #[test]
+    fn prefix_conflict_across_motion_and_mode_table_is_rejected() {
+        let raw: RawConfig = toml::from_str(
+            r#"
+            [keys.motion]
+            "y" = "yank"
+            "#,
+        )
+        .unwrap();
+        assert!(matches!(convert(raw).unwrap_err(), ConfigError::AmbiguousPrefix { .. }));
+    }
+
+    #[test]
+    fn old_visual_table_maps_to_selection() {
+        let raw: RawConfig = toml::from_str(
+            r#"
+            [keys.visual]
+            "x" = "yank"
+            "#,
+        )
+        .unwrap();
+        let config = convert(raw).unwrap();
+        assert_eq!(config.keys[&Mode::VisualLine]["x"], Action::Yank);
     }
 
     #[test]
@@ -558,6 +680,27 @@ mod tests {
         .unwrap();
         let err = convert(raw).unwrap_err();
         assert!(matches!(err, ConfigError::UnknownAction { .. }));
+    }
+
+    #[test]
+    fn printed_config_loads_back_identically() {
+        let mut config = Config::default();
+        config.tables.cursor.insert("x".to_string(), Action::Yank);
+        config.keys = config.tables.resolve().unwrap();
+        let reloaded = convert(toml::from_str(&config.to_toml()).unwrap()).unwrap();
+        assert_eq!(reloaded.keys, config.keys);
+        assert_eq!(format!("{:?}", reloaded.appearance), format!("{:?}", config.appearance));
+    }
+
+    #[test]
+    fn unknown_appearance_key_is_rejected() {
+        assert!(toml::from_str::<RawConfig>("[appearance]\npage_gapp = 1").is_err());
+    }
+
+    #[test]
+    fn unknown_action_error_lists_valid_names() {
+        let err = ConfigError::UnknownAction { mode: "cursor".into(), sequence: "x".into(), action: "nope".into() };
+        assert!(err.to_string().contains("yank_sentence"));
     }
 
     #[test]

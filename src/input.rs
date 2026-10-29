@@ -27,6 +27,12 @@ impl Dispatcher {
         }
     }
 
+    /// True while a partial key sequence (e.g. the `y` of `y i s`) waits
+    /// for more tokens.
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     pub fn mode(&self) -> Mode {
         self.mode
     }
@@ -72,7 +78,7 @@ impl Dispatcher {
             self.pending.clear();
             let count = self.pending_count.parse().unwrap_or(1).max(1);
             self.pending_count.clear();
-            self.apply_mode_transition(action);
+            let action = self.apply_mode_transition(action);
             return Some((action, count));
         }
 
@@ -84,7 +90,20 @@ impl Dispatcher {
         None
     }
 
-    fn apply_mode_transition(&mut self, action: Action) {
+    /// Resolves toggles against the current mode into a concrete mode
+    /// action, applies it, and returns the action to dispatch.
+    /// Toggling the mode you are in drops back to Cursor (Normal, for
+    /// `cursor_mode_toggle`).
+    fn apply_mode_transition(&mut self, action: Action) -> Action {
+        let action = match action {
+            Action::CursorModeToggle if self.mode == Mode::Cursor => Action::NormalMode,
+            Action::CursorModeToggle => Action::CursorMode,
+            Action::VisualModeToggle if self.mode == Mode::Visual => Action::CursorMode,
+            Action::VisualModeToggle => Action::VisualMode,
+            Action::VisualLineModeToggle if self.mode == Mode::VisualLine => Action::CursorMode,
+            Action::VisualLineModeToggle => Action::VisualLineMode,
+            other => other,
+        };
         self.mode = match action {
             Action::CursorMode => Mode::Cursor,
             Action::VisualMode => Mode::Visual,
@@ -92,6 +111,7 @@ impl Dispatcher {
             Action::NormalMode => Mode::Normal,
             _ => self.mode,
         };
+        action
     }
 }
 
@@ -177,6 +197,19 @@ mod tests {
         // "h" is unbound in Normal's default bindings but is
         // character_left in Cursor mode.
         assert_eq!(d.feed(&cfg, "h"), Some((Action::CharacterLeft, 1)));
+    }
+
+    #[test]
+    fn visual_toggles_resolve_by_current_mode() {
+        let cfg = Config::default();
+        let mut d = Dispatcher::new();
+        assert_eq!(d.feed(&cfg, "v"), Some((Action::VisualMode, 1)));
+        assert_eq!(d.feed(&cfg, "V"), Some((Action::VisualLineMode, 1)));
+        assert_eq!(d.feed(&cfg, "v"), Some((Action::VisualMode, 1)));
+        assert_eq!(d.feed(&cfg, "v"), Some((Action::CursorMode, 1)));
+        assert_eq!(d.mode(), Mode::Cursor);
+        assert_eq!(d.feed(&cfg, "V"), Some((Action::VisualLineMode, 1)));
+        assert_eq!(d.feed(&cfg, "V"), Some((Action::CursorMode, 1)));
     }
 
     #[test]

@@ -140,6 +140,16 @@ pub struct SpikeApp {
     #[cfg(target_os = "macos")]
     pub document_events: Option<std::sync::mpsc::Receiver<Vec<PathBuf>>>,
     pub sample_tab: bool,
+    /// Yanked range shown briefly in `yank_highlight`.
+    pub yank_flash: Option<YankFlash>,
+}
+
+#[derive(Clone, Copy)]
+pub struct YankFlash {
+    pub page: usize,
+    pub start: usize,
+    pub end: usize,
+    pub until: f64,
 }
 
 impl SpikeApp {
@@ -219,6 +229,7 @@ impl SpikeApp {
             #[cfg(target_os = "macos")]
             document_events: None,
             sample_tab,
+            yank_flash: None,
         }
     }
 
@@ -491,6 +502,24 @@ impl SpikeApp {
         );
     }
 
+    /// Document mode has no cursor of its own, so a yank text object
+    /// aims at the mouse (when over a page), else the viewport center:
+    /// nearest line by y, nearest character by x. Stores the result as
+    /// the page cursor so the shared text-object code picks it up.
+    fn aim_text_object(&mut self, ctx: &egui::Context) {
+        let hover = ctx.input(|i| i.pointer.hover_pos());
+        let over_page = hover.filter(|p| self.viewport_rect.contains(*p) && self.page_rects.iter().any(|r| r.contains(*p)));
+        let point = over_page.unwrap_or_else(|| self.viewport_rect.center());
+        let Some((page_idx, rect)) = self.page_near(point) else { return };
+        let Some(page) = self.viewer.as_ref().and_then(|v| v.pages.get(page_idx)).and_then(|p| p.rendered.as_ref()) else { return };
+        let inv_scale = page.render_scale / self.zoom;
+        let local = (point - rect.min) * inv_scale;
+        if let Some(cursor) = selection::nearest_cursor(&page.lines, local.x, local.y) {
+            self.active_page = Some(page_idx);
+            self.page_cursor = Some(cursor);
+        }
+    }
+
     /// Applies `is`/`ip`: selects the text object as the mouse-selection
     /// range (`anchor_idx`..`cursor_idx`) on the keyboard's current page.
     pub fn apply_text_object(&mut self, bounds: Option<(selection::Cursor, selection::Cursor)>) {
@@ -611,6 +640,9 @@ impl SpikeApp {
             // and copy it immediately (unlike the bare motions above,
             // which only move the cursor).
             CopySentence => {
+                if self.dispatcher.mode() == config::Mode::Normal {
+                    self.aim_text_object(ctx);
+                }
                 if let Some(page_idx) = self.keyboard_page() {
                     if let Some(lines) = Self::page_lines(self.viewer.as_ref().unwrap(), page_idx) {
                         let cursor = self.cursor_for_page(page_idx);
@@ -621,6 +653,9 @@ impl SpikeApp {
                 }
             }
             CopyParagraph => {
+                if self.dispatcher.mode() == config::Mode::Normal {
+                    self.aim_text_object(ctx);
+                }
                 if let Some(page_idx) = self.keyboard_page() {
                     if let Some(lines) = Self::page_lines(self.viewer.as_ref().unwrap(), page_idx).filter(|l| !l.is_empty()) {
                         let cursor = self.cursor_for_page(page_idx);
@@ -654,6 +689,8 @@ impl SpikeApp {
             }
             SearchNext => self.jump_search(count, false, ctx),
             SearchPrev => self.jump_search(count, true, ctx),
+            // Resolved to concrete mode actions by `Dispatcher::feed`.
+            CursorModeToggle | VisualModeToggle | VisualLineModeToggle => unreachable!("toggle not resolved by Dispatcher"),
         }
     }
 
@@ -1160,7 +1197,12 @@ impl SpikeApp {
             text.push('\n');
         }
         ctx.copy_text(text.clone());
+        let until = ctx.input(|i| i.time) + f64::from(self.cfg.appearance.yank_highlight_ms) / 1000.0;
+        self.yank_flash = Some(YankFlash { page: page_idx, start: a, end: b, until });
         eprintln!("copied: {text:?}");
+        self.anchor_idx = None;
+        self.cursor_idx = None;
+        self.dispatcher.reset();
         self.notify(ctx, "Copied selection to clipboard");
     }
 
