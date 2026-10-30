@@ -54,8 +54,14 @@ pub const MAX_RENDER_SCALE: f32 = SCALE * MAX_ZOOM_FACTOR * 3.0 * RENDER_HEADROO
 /// fixed scale without also accounting for display density. Fixed by
 /// multiplying by `pixels_per_point` directly instead of assuming it.
 pub fn target_render_scale(zoom: f32, pixels_per_point: f32) -> f32 {
-    (zoom * pixels_per_point * RENDER_HEADROOM).min(MAX_RENDER_SCALE)
+    // Full-page texture is only a stretched backdrop; sharp text comes from
+    // viewport tiles (`SpikeApp::update_tiles`), so cap its resolution.
+    (zoom * pixels_per_point * RENDER_HEADROOM).min(BACKDROP_PX_PER_PT * pixels_per_point).min(MAX_RENDER_SCALE)
 }
+
+/// Max full-page backdrop resolution, in device pixels per PDF point per
+/// unit of `pixels_per_point`.
+pub const BACKDROP_PX_PER_PT: f32 = 1.0;
 
 /// Whether page `i` needs a fresh render job submitted, given its
 /// current `rendered` state's `requested_scale` and any in-flight
@@ -141,16 +147,19 @@ mod render_scale_tests {
 
     #[test]
     fn target_render_scale_multiplies_by_device_pixel_ratio_and_headroom() {
-        // 2x device pixel ratio (a typical Retina/HiDPI display).
-        assert_eq!(target_render_scale(SCALE, 2.0), SCALE * 2.0 * RENDER_HEADROOM);
-        // 1x (a plain display) needs proportionally less.
-        assert_eq!(target_render_scale(SCALE, 1.0), SCALE * RENDER_HEADROOM);
+        // Low zoom: below the backdrop cap, scales with zoom and ratio.
+        assert_eq!(target_render_scale(0.5, 2.0), 0.5 * 2.0 * RENDER_HEADROOM);
+    }
+
+    #[test]
+    fn target_render_scale_caps_backdrop_resolution() {
+        assert_eq!(target_render_scale(SCALE * 3.0, 2.0), BACKDROP_PX_PER_PT * 2.0);
+        assert_eq!(target_render_scale(SCALE, 1.0), BACKDROP_PX_PER_PT);
     }
 
     #[test]
     fn target_render_scale_caps_at_the_safety_ceiling() {
-        assert_eq!(target_render_scale(MAX_RENDER_SCALE, 1.0), MAX_RENDER_SCALE, "must not exceed the ceiling even with headroom applied");
-        assert_eq!(target_render_scale(MAX_RENDER_SCALE * 10.0, 4.0), MAX_RENDER_SCALE);
+        assert!(target_render_scale(MAX_RENDER_SCALE * 10.0, 4.0) <= MAX_RENDER_SCALE);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 # ggPdf
 
-Heavily vibecoded minimal keyboard-driven PDF viewer with Vim-style motions and
-text selection, based on PDFium engine.
+Minimal keyboard-driven PDF viewer with Vim-style motions and text selection,
+based on PDFium engine.
 
 <p align="center">
   <img src="assets/icons/icon.svg" alt="ggPdf icon" width="96">
@@ -40,8 +40,8 @@ Build and install (rerun to update):
   `%LOCALAPPDATA%\Programs\ggPdf` and adds Start menu and **Open with** entries.
 
 If PowerShell blocks the script, use
-`powershell -ExecutionPolicy Bypass -File .\install.ps1`. Neither script
-changes your default PDF viewer.
+`powershell -ExecutionPolicy Bypass -File .\install.ps1`. Neither script changes
+your default PDF viewer.
 
 Or run without installing:
 
@@ -82,18 +82,57 @@ macOS, you can also run `open -a ggPdf /path/to/document.pdf`.
 | `is` / `ip`     | Select sentence / paragraph in `VISUAL`             |
 | `yis` / `yip`   | Copy sentence / paragraph in `CURSOR`, exit         |
 
+Outside text modes, `yis` / `yip` copy the sentence / paragraph under the mouse,
+or at the center of the window if the mouse is not over a page.
+
 Prefix `h/j/k/l` and word motions with a count (e.g. `3j`, `2w`, `4l`).
 
-## Appearance
+## Configuration
 
-Edit `~/.config/ggpdf/config.toml` to adjust the canvas colors and page gap:
+ggPdf reads the first existing file of:
 
-```toml
-[appearance]
-canvas_light = "#ededed"
-canvas_dark = "#282828"
-page_gap = 12
-```
+1. `$XDG_CONFIG_HOME/ggpdf/config.toml` (or `~/.config/ggpdf/config.toml`)
+2. macOS: `~/Library/Application Support/ggpdf/config.toml`
+3. Windows: `%APPDATA%\ggpdf\config.toml`
+
+[`config.example.toml`](config.example.toml) lists every option and key binding
+with its default. Copy it and edit. An invalid file is reported on stderr and
+the defaults are used. Omitted options keep their defaults.
+`ggpdf --print-config` prints the resolved config, a good starting point for
+your own file.
+
+### Appearance
+
+`[appearance]` holds colors (`#rrggbb` or `#rrggbbaa`), sizes, and fonts. Colors
+for the gutter and tab bar come as `_light` / `_dark` pairs. `font_file` points
+to a `.ttf`/`.otf` file used before the built-in font; empty means built-in.
+Unknown options are an error.
+
+### Key bindings
+
+Bindings are `"<key sequence>" = "<action>"` in four tables:
+
+| Table              | Applies to                                           |
+| ------------------ | ---------------------------------------------------- |
+| `[keys.document]`  | Normal mode (scrolling, file-level keys)             |
+| `[keys.motion]`    | Shared by cursor and selection modes                 |
+| `[keys.cursor]`    | Cursor mode: `motion` plus this table                |
+| `[keys.selection]` | `VISUAL` and `VISUAL LINE`: `motion` plus this table |
+
+A mode's own table wins over `motion`. A table you leave out keeps its defaults;
+a table you include replaces that table's defaults, so copy it whole. A key
+sequence may not be a prefix of another in the same mode (`y` and `y i s` cannot
+both exist), and one binding must be `close` or `cancel`.
+
+Old names still load: `[keys.normal]` is `document`, `[keys.visual]` and
+`[keys.visual_line]` are `selection`, and `cursor_mode`, `visual_mode`,
+`visual_line_mode`, `normal_mode`, `copy_sentence`, `copy_paragraph` are aliases
+of `*_toggle`, `document_mode`, `yank_sentence`, `yank_paragraph`. An unknown
+action name lists all valid ones.
+
+Highlight colors (`selection`, `cursor`, `search`, `search_current`,
+`yank_highlight`) have `_light` and `_dark` variants. The bare name, for example
+`selection = "#4285f459"`, still works and sets both.
 
 The native app renders its own UI; the old `theme.css` and `style.css` no longer
 apply.

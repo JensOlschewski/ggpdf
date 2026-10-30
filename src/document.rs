@@ -136,6 +136,21 @@ impl<'a> Page<'a> {
         Ok(bitmap.as_image()?.to_rgba8())
     }
 
+    /// Renders only the `width` x `height` pixel window whose top-left
+    /// sits at (`x`, `y`) in the full page bitmap at `pixels_per_point`.
+    /// The bitmap allocated is window-sized, not page-sized.
+    pub fn render_region(&self, pixels_per_point: f32, x: i32, y: i32, width: i32, height: i32) -> Result<image::RgbaImage, DocumentError> {
+        let size = self.size();
+        let config = PdfRenderConfig::new()
+            .set_target_width((size.width_pt * pixels_per_point) as i32)
+            .set_target_height((size.height_pt * pixels_per_point) as i32)
+            .set_origin(-x, -y);
+
+        let mut bitmap = PdfBitmap::empty(width, height, PdfBitmapFormat::BGRA)?;
+        self.page.render_into_bitmap_with_config(&mut bitmap, &config)?;
+        Ok(bitmap.as_image()?.to_rgba8())
+    }
+
     /// Extracts every character with a Unicode value and its bounds.
     /// Characters PDFium cannot map to a Unicode scalar (e.g. some
     /// embedded symbol-font glyphs) are skipped.

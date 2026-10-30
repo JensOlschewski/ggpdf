@@ -157,9 +157,10 @@ impl eframe::App for SpikeApp {
                         egui::Key::Num0 if i.modifiers.ctrl => self.zoom_to(SCALE, i.pointer.hover_pos()),
                         egui::Key::U if i.modifiers.ctrl => self.pending_scroll = Some(egui::vec2(0.0, HALF_PAGE_SCROLL)),
                         egui::Key::D if i.modifiers.ctrl => self.pending_scroll = Some(egui::vec2(0.0, -HALF_PAGE_SCROLL)),
-                        // In cursor and visual modes, "i" starts text objects
-                        // such as "is" and "ip"; only Normal mode toggles dark.
-                        egui::Key::I if input::dark_mode_shortcut(self.dispatcher.mode(), i.modifiers) => self.dark = !self.dark,
+                        // "i" continues text objects ("y i s") when a sequence is
+                        // pending and in cursor/visual modes; otherwise only
+                        // Normal mode toggles dark.
+                        egui::Key::I if input::dark_mode_shortcut(self.dispatcher.mode(), i.modifiers) && !self.dispatcher.has_pending() => self.dark = !self.dark,
                         egui::Key::B if i.modifiers.command => self.show_boxes = !self.show_boxes,
                         egui::Key::C if i.modifiers.command => copy_requested = true,
                         egui::Key::O if i.modifiers.ctrl && !i.modifiers.command && !i.modifiers.alt => open_dialog_requested = true,
@@ -216,23 +217,28 @@ impl eframe::App for SpikeApp {
         // fill left a near-black strip behind it that didn't match the
         // canvas color on every other edge. Computed early so both this
         // panel and `CentralPanel` below paint the same color.
-        let canvas_fallback = if self.dark { egui::Color32::from_gray(40) } else { egui::Color32::from_gray(237) };
-        let canvas_hex = if self.dark { &self.cfg.appearance.canvas_dark } else { &self.cfg.appearance.canvas_light };
-        let canvas_color = parse_hex_color(canvas_hex, canvas_fallback);
+        let ap = &self.cfg.appearance;
+        let themed = |light: &str, dark: &str| parse_hex_color(if self.dark { dark } else { light }, egui::Color32::MAGENTA);
+        let canvas_color = themed(&ap.canvas_light, &ap.canvas_dark);
+        let tab_bar_color = themed(&ap.tab_bar_light, &ap.tab_bar_dark);
+        let tab_active_color = themed(&ap.tab_active_light, &ap.tab_active_dark);
+        let tab_inactive_color = themed(&ap.tab_inactive_light, &ap.tab_inactive_dark);
+        let gutter_rel_color = themed(&ap.gutter_rel_light, &ap.gutter_rel_dark);
+        let gutter_current_color = themed(&ap.gutter_current_light, &ap.gutter_current_dark);
+        let font_size = ap.font_size;
 
         // Matches shell.css's ".pdf-shell-tabs": a centered, numbered tab
         // row, canvas-colored background, small monospace text, current
         // tab in plain red/bold (no button chrome) — hidden entirely
         // with one document open ("no pane-bar height" for the
         // single-pane case).
-        let shell_fg = if self.dark { egui::Color32::from_rgb(0xcc, 0xcc, 0xcc) } else { egui::Color32::from_rgb(0x33, 0x33, 0x33) };
         if self.app.tab_count() > 1 {
             egui::Panel::top("tabs")
                 // `show_separator_line` is on by default and paints a
                 // dim 1px line at the panel's bottom edge regardless of
                 // `frame`'s fill.
                 .show_separator_line(false)
-                .frame(egui::Frame::new().fill(canvas_color).inner_margin(egui::Margin::symmetric(6, 3)))
+                .frame(egui::Frame::new().fill(tab_bar_color).inner_margin(egui::Margin::symmetric(6, 3)))
                 .show(ui, |ui| {
                     let labels: Vec<(String, bool)> = (0..self.app.tab_count())
                         .map(|index| {
@@ -246,18 +252,18 @@ impl eframe::App for SpikeApp {
                     // instead: measure every label at the same font used
                     // to paint it, then pad the left edge by the leftover
                     // space.
-                    let font_id = egui::FontId::monospace(12.0);
+                    let font_id = egui::FontId::monospace(font_size);
                     let spacing = ui.spacing().item_spacing.x;
                     let content_width: f32 = labels
                         .iter()
-                        .map(|(text, _)| ui.ctx().fonts_mut(|f| f.layout_no_wrap(text.clone(), font_id.clone(), shell_fg).size().x))
+                        .map(|(text, _)| ui.ctx().fonts_mut(|f| f.layout_no_wrap(text.clone(), font_id.clone(), tab_inactive_color).size().x))
                         .sum::<f32>()
                         + spacing * labels.len().saturating_sub(1) as f32;
                     ui.horizontal(|ui| {
                         ui.add_space(((ui.available_width() - content_width) / 2.0).max(0.0));
                         for (index, (text, is_current)) in labels.into_iter().enumerate() {
-                            let rich = egui::RichText::new(text).monospace().size(12.0);
-                            let rich = if is_current { rich.color(egui::Color32::from_rgb(0xd9, 0x30, 0x25)).strong() } else { rich.color(shell_fg) };
+                            let rich = egui::RichText::new(text).monospace().size(font_size);
+                            let rich = if is_current { rich.color(tab_active_color).strong() } else { rich.color(tab_inactive_color) };
                             if ui.add(egui::Label::new(rich).sense(egui::Sense::click())).clicked() {
                                 self.app.jump_to_tab(index);
                                 self.dispatcher.reset();
@@ -306,16 +312,20 @@ impl eframe::App for SpikeApp {
         self.switch_to_active_tab(&ctx);
         self.collect_render_results(&ctx);
 
-        let selection_color = parse_hex_color(
-            &self.cfg.appearance.selection,
-            egui::Color32::from_rgba_unmultiplied(66, 133, 244, 90),
-        );
-        let cursor_color = parse_hex_color(
-            &self.cfg.appearance.cursor,
-            egui::Color32::from_rgba_unmultiplied(120, 120, 120, 166),
-        );
-        let search_color = parse_hex_color(&self.cfg.appearance.search, egui::Color32::from_rgba_unmultiplied(255, 215, 0, 89));
-        let search_current_color = parse_hex_color(&self.cfg.appearance.search_current, egui::Color32::from_rgba_unmultiplied(255, 140, 0, 166));
+        let ap = &self.cfg.appearance;
+        let pick = |light: &str, dark: &str| parse_hex_color(if self.dark { dark } else { light }, egui::Color32::MAGENTA);
+        let selection_color = pick(&ap.selection_light, &ap.selection_dark);
+        let cursor_color = pick(&ap.cursor_light, &ap.cursor_dark);
+        let search_color = pick(&ap.search_light, &ap.search_dark);
+        let search_current_color = pick(&ap.search_current_light, &ap.search_current_dark);
+        let yank_color = pick(&ap.yank_highlight_light, &ap.yank_highlight_dark);
+        let now = ctx.input(|i| i.time);
+        if self.yank_flash.is_some_and(|f| now >= f.until) {
+            self.yank_flash = None;
+        }
+        if self.yank_flash.is_some() {
+            request_repaint(&ctx);
+        }
         let page_gap = self.cfg.appearance.page_gap as f32;
 
         let mut zoom_correction_pending = false;
@@ -409,32 +419,34 @@ impl eframe::App for SpikeApp {
                         let rect = response.rect;
                         page_rects.push(rect);
 
+                        // Sharp viewport tile over the stretched page texture.
+                        // Skipped while its theme differs from the current one.
+                        if let Some(tile) = self.tiles.get(&(self.app.active_index(), page_idx))
+                            && tile.dark == self.dark
+                        {
+                            let f = self.zoom / tile.scale;
+                            let tile_rect = egui::Rect::from_min_size(rect.min + egui::vec2(tile.x as f32, tile.y as f32) * f, egui::vec2(tile.w as f32, tile.h as f32) * f);
+                            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                            ui.painter_at(rect).image(tile.texture.id(), tile_rect, uv, egui::Color32::WHITE);
+                        }
+
                         if let Some(gutter_rect) = gutter_rect {
                             let cursor_line = self.page_cursor.filter(|_| self.active_page == Some(page_idx)).map(|c| c.line);
                             let gutter_painter = ui.painter_at(gutter_rect);
                             for (i, line) in page.lines.iter().enumerate() {
                                 let Some(lr) = line.rect() else { continue };
-                                let label = match cursor_line {
-                                    Some(cl) if cl == i => (i + 1).to_string(),
-                                    Some(cl) => (i as isize - cl as isize).unsigned_abs().to_string(),
-                                    None => (i + 1).to_string(),
+                                let (label, color) = match cursor_line {
+                                    Some(cl) if cl == i => ((i + 1).to_string(), gutter_current_color),
+                                    Some(cl) => ((i as isize - cl as isize).unsigned_abs().to_string(), gutter_rel_color),
+                                    None => ((i + 1).to_string(), gutter_rel_color),
                                 };
                                 let y = gutter_rect.top() + (lr.top + lr.bottom) * 0.5 * display_scale;
                                 gutter_painter.text(
                                     egui::pos2(gutter_rect.right() - 4.0, y),
                                     egui::Align2::RIGHT_CENTER,
                                     label,
-                                    egui::FontId::monospace(11.0),
-                                    // style.css: .pdf-visual-line color
-                                    // light-dark(#777,#aaa), .is-current
-                                    // #d93025 bold.
-                                    if cursor_line == Some(i) {
-                                        egui::Color32::from_rgb(0xd9, 0x30, 0x25)
-                                    } else if self.dark {
-                                        egui::Color32::from_rgb(0xaa, 0xaa, 0xaa)
-                                    } else {
-                                        egui::Color32::from_rgb(0x77, 0x77, 0x77)
-                                    },
+                                    egui::FontId::monospace(font_size - 1.0),
+                                    color,
                                 );
                             }
                         }
@@ -508,6 +520,13 @@ impl eframe::App for SpikeApp {
                             }
                         }
 
+                        if let Some(flash) = self.yank_flash.filter(|f| f.page == page_idx) {
+                            for span in selection::selection_span_rects(&page.lines, flash.start, flash.end) {
+                                let r = to_egui_rect(span, display_scale).translate(rect.min.to_vec2());
+                                painter.rect_filled(r, 0.0, yank_color);
+                            }
+                        }
+
                         ui.add_space(page_gap);
                     }
                     if let Some(anchor) = self.pending_zoom_anchor.take()
@@ -529,6 +548,28 @@ impl eframe::App for SpikeApp {
             });
         if !zoom_correction_pending {
             self.progressive_render(&ctx);
+            self.update_tiles(&ctx);
         }
     }
+}
+
+/// Puts the configured font file, if any, ahead of the built-in
+/// monospace font. A missing or unreadable file is reported and ignored.
+pub fn install_font(ctx: &egui::Context, font_file: &str) {
+    if font_file.is_empty() {
+        return;
+    }
+    let bytes = match std::fs::read(font_file) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("ggpdf: could not read font_file {font_file}: {e}");
+            return;
+        }
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert("user".to_owned(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+    for family in [egui::FontFamily::Monospace, egui::FontFamily::Proportional] {
+        fonts.families.entry(family).or_default().insert(0, "user".to_owned());
+    }
+    ctx.set_fonts(fonts);
 }

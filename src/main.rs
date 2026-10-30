@@ -38,6 +38,10 @@ fn main() -> eframe::Result<()> {
     let startup = std::time::Instant::now();
     let cfg = config::load_or_default();
     let config_elapsed = startup.elapsed();
+    if env::args().any(|a| a == "--print-config") {
+        print!("{}", cfg.to_toml());
+        return Ok(());
+    }
     let total_bindings: usize = cfg.keys.values().map(|m| m.len()).sum();
     println!(
         "ggpdf: loaded config — {} modes, {total_bindings} key bindings, page_gap={}",
@@ -86,6 +90,7 @@ fn main() -> eframe::Result<()> {
             native_options(),
             Box::new(move |cc| {
                 *repaint.lock().unwrap() = Some(cc.egui_ctx.clone());
+                ui::install_font(&cc.egui_ctx, &cfg.appearance.font_file);
                 // Finder can send the cold-launch event before eframe creates
                 // its UI. Consume it now, before deciding on a sample tab.
                 let initial_events: Vec<_> = receiver.try_iter().flatten().collect();
@@ -105,6 +110,9 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         WINDOW_TITLE,
         native_options(),
-        Box::new(move |_cc| Ok(Box::new(SpikeApp::new(library, cfg, &file_args)))),
+        Box::new(move |cc| {
+            ui::install_font(&cc.egui_ctx, &cfg.appearance.font_file);
+            Ok(Box::new(SpikeApp::new(library, cfg, &file_args)))
+        }),
     )
 }

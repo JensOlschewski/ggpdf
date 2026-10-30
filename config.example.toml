@@ -1,0 +1,91 @@
+# ggpdf example config. Every option is listed with its default value.
+#
+# Copy to one of (first existing file wins):
+#   $XDG_CONFIG_HOME/ggpdf/config.toml  (or ~/.config/ggpdf/config.toml)
+#   macOS:   ~/Library/Application Support/ggpdf/config.toml
+#   Windows: %APPDATA%\ggpdf\config.toml
+#
+# An invalid file is reported on stderr and ignored; defaults are used.
+
+[appearance]
+# Sizes
+page_gap     = 12             # space between pages
+gutter_width = 48             # left gutter width
+
+# Text
+font_file = ""                # empty = built-in font
+font_size   = 14.0            # status line, tab bar, gutter
+
+# Colors are hex: #rrggbb or #rrggbbaa.
+canvas_light         = "#ededed"    # background behind pages, light theme
+canvas_dark          = "#282828"    # background behind pages, dark theme
+selection_light      = "#2563eb33"
+selection_dark       = "#60a5fa40"
+cursor_light         = "#2563eb99"
+cursor_dark          = "#60a5fa99"
+search_light         = "#eab30840"
+search_dark          = "#fbbf244d"
+
+yank_highlight_light = "#16a34a4d"
+yank_highlight_dark  = "#22c55e59"
+yank_highlight_ms    = 150
+
+gutter_rel_light     = "#c8c8c8"
+gutter_rel_dark      = "#2a2a2a"
+gutter_current_light = "#dc2626"
+gutter_current_dark  = "#ef4444"
+tab_bar_light        = "#ededed"
+tab_bar_dark         = "#282828"
+tab_active_light     = "#dc2626"
+tab_active_dark      = "#ef4444"
+tab_inactive_light   = "#c8c8c8"
+tab_inactive_dark    = "#2a2a2a"
+
+# Key bindings: "<key sequence>" = "<action>".
+# Sequences are space-separated tokens, e.g. "y i s".
+# Within one effective table, a sequence may not be a prefix of another.
+# At least one binding must be "close" or "cancel".
+
+[keys.document]
+"j"   = "scroll_down"
+"k"   = "scroll_up"
+"g g" = "document_start"
+"G"   = "document_end"
+"c"   = "cursor_mode_toggle"
+"v"   = "visual_mode_toggle"
+"V"   = "visual_line_mode_toggle"
+"n"   = "search_next"
+"N"   = "search_prev"
+"q"   = "close"
+"Esc" = "close"
+"y i s" = "yank_sentence"
+"y i p" = "yank_paragraph"
+
+[keys.motion]
+"h"   = "character_left"
+"l"   = "character_right"
+"j"   = "line_down"
+"k"   = "line_up"
+"w"   = "word_forward"
+"b"   = "word_backward"
+"e"   = "word_end"
+"W"   = "big_word_forward"
+"B"   = "big_word_backward"
+"E"   = "big_word_end"
+"0"   = "line_start"
+"$"   = "line_end"
+"^"   = "line_first_non_blank"
+"n"   = "search_next"
+"N"   = "search_prev"
+"v"   = "visual_mode_toggle"
+"V"   = "visual_line_mode_toggle"
+"Esc" = "document_mode"
+
+[keys.cursor]
+"y i s" = "yank_sentence"
+"y i p" = "yank_paragraph"
+
+[keys.selection]
+"y"   = "yank"
+"i s" = "select_sentence"
+"i p" = "select_paragraph"

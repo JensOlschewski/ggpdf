@@ -12,8 +12,24 @@ use crate::viewport::{to_egui_rect, ZoomAnchor, SCALE, SCROLL_MAX};
 use crate::window::bundled_resources;
 use crate::{app, config, input, selection, text};
 use eframe::egui;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+const TILE_DEBOUNCE: Duration = Duration::from_millis(120);
+
+/// A rendered pixel window of one page at `scale` pixels per PDF point,
+/// single theme. (`x`, `y`, `w`, `h`) are pixels in the full page bitmap.
+pub struct Tile {
+    pub texture: egui::TextureHandle,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub scale: f32,
+    pub dark: bool,
+}
 
 fn is_pdf_path(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
@@ -63,6 +79,15 @@ pub struct SpikeApp {
     pub page_rects: Vec<egui::Rect>,
     pub viewport_rect: egui::Rect,
     pub pending_zoom_anchor: Option<ZoomAnchor>,
+    /// Viewport-window textures, keyed by (tab, page). See `update_tiles`.
+    pub tiles: HashMap<(usize, usize), Tile>,
+    /// (tab, page) -> generation of the in-flight tile request.
+    pub tile_pending: HashMap<(usize, usize), u64>,
+    pub tile_generation: u64,
+    /// (zoom, dark) last seen, and when it last changed: tile re-renders
+    /// for a changed view wait until it has been stable for `TILE_DEBOUNCE`.
+    pub tile_view_key: (u32, bool),
+    pub tile_view_changed: Option<Instant>,
     pub close_requested: bool,
     /// Per-motion page/line/char feedback. Not rendered — `style.css`'s
     /// `.pdf-visual-status` is screen-reader-only (clip-path trick)
@@ -115,6 +140,16 @@ pub struct SpikeApp {
     #[cfg(target_os = "macos")]
     pub document_events: Option<std::sync::mpsc::Receiver<Vec<PathBuf>>>,
     pub sample_tab: bool,
+    /// Yanked range shown briefly in `yank_highlight`.
+    pub yank_flash: Option<YankFlash>,
+}
+
+#[derive(Clone, Copy)]
+pub struct YankFlash {
+    pub page: usize,
+    pub start: usize,
+    pub end: usize,
+    pub until: f64,
 }
 
 impl SpikeApp {
@@ -173,6 +208,11 @@ impl SpikeApp {
             page_rects: Vec::new(),
             viewport_rect: egui::Rect::NOTHING,
             pending_zoom_anchor: None,
+            tiles: HashMap::new(),
+            tile_pending: HashMap::new(),
+            tile_generation: 0,
+            tile_view_key: (0, false),
+            tile_view_changed: None,
             close_requested: false,
             status: String::new(),
             notice: String::new(),
@@ -189,6 +229,7 @@ impl SpikeApp {
             #[cfg(target_os = "macos")]
             document_events: None,
             sample_tab,
+            yank_flash: None,
         }
     }
 
@@ -461,6 +502,24 @@ impl SpikeApp {
         );
     }
 
+    /// Document mode has no cursor of its own, so a yank text object
+    /// aims at the mouse (when over a page), else the viewport center:
+    /// nearest line by y, nearest character by x. Stores the result as
+    /// the page cursor so the shared text-object code picks it up.
+    fn aim_text_object(&mut self, ctx: &egui::Context) {
+        let hover = ctx.input(|i| i.pointer.hover_pos());
+        let over_page = hover.filter(|p| self.viewport_rect.contains(*p) && self.page_rects.iter().any(|r| r.contains(*p)));
+        let point = over_page.unwrap_or_else(|| self.viewport_rect.center());
+        let Some((page_idx, rect)) = self.page_near(point) else { return };
+        let Some(page) = self.viewer.as_ref().and_then(|v| v.pages.get(page_idx)).and_then(|p| p.rendered.as_ref()) else { return };
+        let inv_scale = page.render_scale / self.zoom;
+        let local = (point - rect.min) * inv_scale;
+        if let Some(cursor) = selection::nearest_cursor(&page.lines, local.x, local.y) {
+            self.active_page = Some(page_idx);
+            self.page_cursor = Some(cursor);
+        }
+    }
+
     /// Applies `is`/`ip`: selects the text object as the mouse-selection
     /// range (`anchor_idx`..`cursor_idx`) on the keyboard's current page.
     pub fn apply_text_object(&mut self, bounds: Option<(selection::Cursor, selection::Cursor)>) {
@@ -581,6 +640,9 @@ impl SpikeApp {
             // and copy it immediately (unlike the bare motions above,
             // which only move the cursor).
             CopySentence => {
+                if self.dispatcher.mode() == config::Mode::Normal {
+                    self.aim_text_object(ctx);
+                }
                 if let Some(page_idx) = self.keyboard_page() {
                     if let Some(lines) = Self::page_lines(self.viewer.as_ref().unwrap(), page_idx) {
                         let cursor = self.cursor_for_page(page_idx);
@@ -591,6 +653,9 @@ impl SpikeApp {
                 }
             }
             CopyParagraph => {
+                if self.dispatcher.mode() == config::Mode::Normal {
+                    self.aim_text_object(ctx);
+                }
                 if let Some(page_idx) = self.keyboard_page() {
                     if let Some(lines) = Self::page_lines(self.viewer.as_ref().unwrap(), page_idx).filter(|l| !l.is_empty()) {
                         let cursor = self.cursor_for_page(page_idx);
@@ -624,6 +689,8 @@ impl SpikeApp {
             }
             SearchNext => self.jump_search(count, false, ctx),
             SearchPrev => self.jump_search(count, true, ctx),
+            // Resolved to concrete mode actions by `Dispatcher::feed`.
+            CursorModeToggle | VisualModeToggle | VisualLineModeToggle => unreachable!("toggle not resolved by Dispatcher"),
         }
     }
 
@@ -824,6 +891,87 @@ impl SpikeApp {
         if nearby_ready && !viewer.sizes_requested && !viewer.pages.is_empty() {
             viewer.sizes_requested = true;
             self.spawn_page_size_measurement(tab, document, ctx.clone());
+        }
+    }
+
+    /// Keeps one viewport-sized tile per visible page current. Call after
+    /// layout (needs this frame's `page_rects`). Zoom or theme changes
+    /// bump the worker generation (dropping queued stale tiles) and wait
+    /// `TILE_DEBOUNCE` of stability before submitting; scrolling past a
+    /// tile's coverage, or a page with no tile yet, submits immediately.
+    pub fn update_tiles(&mut self, ctx: &egui::Context) {
+        self.render_worker.set_repaint_context(ctx);
+        let tab = self.app.active_index();
+
+        // Apply at most one finished tile per frame.
+        if let Some(result) = self.render_worker.poll_tile() {
+            let key = (result.tab, result.page);
+            if self.tile_pending.get(&key) == Some(&result.generation) {
+                self.tile_pending.remove(&key);
+            }
+            if let Some(tile) = result.tile
+                && result.generation == self.tile_generation
+            {
+                let (w, h) = (tile.image.width() as i32, tile.image.height() as i32);
+                let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], tile.image.as_raw());
+                let texture = ctx.load_texture(format!("tile-{}-{}", result.tab, result.page), image, egui::TextureOptions::LINEAR);
+                self.tiles.insert(key, Tile { texture, x: tile.x, y: tile.y, w, h, scale: tile.scale, dark: self.dark });
+            }
+            ctx.request_repaint();
+        }
+
+        let Some(active) = self.app.active() else { return };
+        let document = active.document.clone();
+        let ppp = ctx.pixels_per_point();
+        let scale = self.zoom * ppp;
+        let max_side = ctx.input(|i| i.max_texture_side) as i32;
+
+        let view_key = (self.zoom.to_bits(), self.dark);
+        if view_key != self.tile_view_key {
+            self.tile_view_key = view_key;
+            self.tile_view_changed = Some(Instant::now());
+            self.tile_generation += 1;
+            self.render_worker.set_tile_generation(self.tile_generation);
+        }
+        let settled = self.tile_view_changed.is_none_or(|t| t.elapsed() >= TILE_DEBOUNCE);
+
+        let viewport = self.viewport_rect;
+        let margin = egui::vec2(viewport.width() * 0.25, viewport.height() * 0.5);
+        let keep = viewport.expand2(margin * 4.0);
+        self.tiles.retain(|&(t, page), _| t == tab && self.page_rects.get(page).is_some_and(|r| r.intersects(keep)));
+
+        for (page, &rect) in self.page_rects.iter().enumerate() {
+            if !rect.intersects(viewport) {
+                continue;
+            }
+            let key = (tab, page);
+            if self.tile_pending.get(&key) == Some(&self.tile_generation) {
+                continue;
+            }
+            let to_px = |r: egui::Rect| {
+                let min = (r.min - rect.min) * ppp;
+                let max = (r.max - rect.min) * ppp;
+                (min.x.floor() as i32, min.y.floor() as i32, max.x.ceil() as i32, max.y.ceil() as i32)
+            };
+            let (vx0, vy0, vx1, vy1) = to_px(rect.intersect(viewport));
+            let covered = self.tiles.get(&key).is_some_and(|t| {
+                (t.scale - scale).abs() < 0.01 && t.dark == self.dark && t.x <= vx0 && t.y <= vy0 && t.x + t.w >= vx1 && t.y + t.h >= vy1
+            });
+            if covered || (self.tiles.contains_key(&key) && !settled) {
+                continue;
+            }
+            let (x0, y0, x1, y1) = to_px(rect.intersect(viewport.expand2(margin)));
+            let window = (x0, y0, (x1 - x0).min(max_side), (y1 - y0).min(max_side));
+            self.tile_pending.insert(key, self.tile_generation);
+            self.render_worker.submit_tile(
+                tab,
+                page,
+                render_worker::TileJobSpec { scale, window, dark: self.dark, generation: self.tile_generation, document: document.clone() },
+            );
+        }
+
+        if !settled {
+            ctx.request_repaint_after(TILE_DEBOUNCE);
         }
     }
 
@@ -1049,7 +1197,12 @@ impl SpikeApp {
             text.push('\n');
         }
         ctx.copy_text(text.clone());
+        let until = ctx.input(|i| i.time) + f64::from(self.cfg.appearance.yank_highlight_ms) / 1000.0;
+        self.yank_flash = Some(YankFlash { page: page_idx, start: a, end: b, until });
         eprintln!("copied: {text:?}");
+        self.anchor_idx = None;
+        self.cursor_idx = None;
+        self.dispatcher.reset();
         self.notify(ctx, "Copied selection to clipboard");
     }
 
