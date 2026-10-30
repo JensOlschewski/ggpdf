@@ -8,54 +8,43 @@
 # An invalid file is reported on stderr and ignored; defaults are used.
 
 [appearance]
-# Colors are hex: #rrggbb or #rrggbbaa.
-canvas_light   = "#ededed"    # background behind pages, light theme
-canvas_dark    = "#282828"    # background behind pages, dark theme
-selection      = "#4285f459"  # visual-mode selection fill
-cursor         = "#787878a6"  # text cursor fill
-search         = "#ffd70059"  # every search match
-search_current = "#ff8c00a6"  # match last jumped to with n/N
-yank_highlight = "#34a85359"  # brief flash after a yank
-yank_highlight_ms = 300       # flash duration, milliseconds
-
 # Sizes
 page_gap     = 12             # space between pages
 gutter_width = 48             # left gutter width
 
 # Text
-font_file = ""                # path to a .ttf/.otf; empty = built-in font
-font_size   = 12.0            # tab bar and notices; gutter is 1 smaller
+font_file = ""                # empty = built-in font
+font_size   = 14.0            # status line, tab bar, gutter
 
-# Gutter line numbers
-gutter_abs_light     = "#777777"   # absolute numbers
-gutter_abs_dark      = "#aaaaaa"
-gutter_rel_light     = "#777777"   # relative numbers
-gutter_rel_dark      = "#aaaaaa"
-gutter_current_light = "#d93025"   # number of the current line
-gutter_current_dark  = "#d93025"
+# Colors are hex: #rrggbb or #rrggbbaa.
+canvas_light         = "#ededed"    # background behind pages, light theme
+canvas_dark          = "#282828"    # background behind pages, dark theme
+selection_light      = "#2563eb33"
+selection_dark       = "#60a5fa40"
+cursor_light         = "#2563eb99"
+cursor_dark          = "#60a5fa99"
+search_light         = "#eab30840"
+search_dark          = "#fbbf244d"
 
-# Top pane (tabs)
-tab_bar_light      = "#ededed"     # tab bar background
-tab_bar_dark       = "#282828"
-tab_active_light   = "#d93025"     # current PDF text
-tab_active_dark    = "#d93025"
-tab_inactive_light = "#333333"     # other PDFs text
-tab_inactive_dark  = "#cccccc"
+yank_highlight_light = "#16a34a4d"
+yank_highlight_dark  = "#22c55e59"
+yank_highlight_ms    = 150
 
+gutter_rel_light     = "#c8c8c8"
+gutter_rel_dark      = "#2a2a2a"
+gutter_current_light = "#dc2626"
+gutter_current_dark  = "#ef4444"
+tab_bar_light        = "#ededed"
+tab_bar_dark         = "#282828"
+tab_active_light     = "#dc2626"
+tab_active_dark      = "#ef4444"
+tab_inactive_light   = "#c8c8c8"
+tab_inactive_dark    = "#2a2a2a"
 
 # Key bindings: "<key sequence>" = "<action>".
 # Sequences are space-separated tokens, e.g. "y i s".
 # Within one effective table, a sequence may not be a prefix of another.
 # At least one binding must be "close" or "cancel".
-#
-# Tables:
-#   document   scrolling and file-level keys. Inherits nothing.
-#   motion     shared by cursor and selection.
-#   cursor     cursor mode  = motion + [keys.cursor]
-#   selection  visual and visual-line mode = motion + [keys.selection]
-# A mode's own table wins over [keys.motion] for the same sequence.
-# A table you omit keeps its defaults. A table you include replaces
-# that table's defaults entirely, so copy it whole and edit it.
 
 [keys.document]
 "j"   = "scroll_down"
@@ -92,12 +81,10 @@ tab_inactive_dark  = "#cccccc"
 "V"   = "visual_line_mode_toggle"
 "Esc" = "document_mode"
 
-# "y" is unbound here, so "y i s" is a legal sequence.
 [keys.cursor]
 "y i s" = "yank_sentence"
 "y i p" = "yank_paragraph"
 
-# "y" is bound here, so no "y ..." sequence may exist.
 [keys.selection]
 "y"   = "yank"
 "i s" = "select_sentence"

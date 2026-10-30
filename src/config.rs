@@ -149,20 +149,37 @@ pub struct Appearance {
     pub canvas_dark: String,
     pub page_gap: u32,
     pub gutter_width: u32,
-    pub selection: String,
-    pub cursor: String,
+    pub selection_light: String,
+    pub selection_dark: String,
+    pub cursor_light: String,
+    pub cursor_dark: String,
     /// Fill for every `/`/`?` search match except the focused one —
     /// matches a typical "Search" highlight group (a soft yellow),
     /// distinct from `selection`/`cursor` so all three can be visible
     /// at once without being confused for each other.
-    pub search: String,
+    pub search_light: String,
+    pub search_dark: String,
     /// Fill (and outline) for the one match `n`/`N` last jumped to —
     /// a typical "CurSearch"/"IncSearch" highlight group: more opaque
     /// and a different hue than `search` so the current match stands
     /// out among the others.
-    pub search_current: String,
+    pub search_current_light: String,
+    pub search_current_dark: String,
     /// Brief flash over the yanked text.
-    pub yank_highlight: String,
+    pub yank_highlight_light: String,
+    pub yank_highlight_dark: String,
+    /// Old single-color keys: when set, `convert` copies them into both
+    /// the `_light` and `_dark` variants. Never serialized.
+    #[serde(skip_serializing)]
+    selection: Option<String>,
+    #[serde(skip_serializing)]
+    cursor: Option<String>,
+    #[serde(skip_serializing)]
+    search: Option<String>,
+    #[serde(skip_serializing)]
+    search_current: Option<String>,
+    #[serde(skip_serializing)]
+    yank_highlight: Option<String>,
     /// How long the yank flash stays visible, in milliseconds.
     pub yank_highlight_ms: u32,
     /// Gutter and tab text sizes derive from this; the gutter is one
@@ -171,8 +188,6 @@ pub struct Appearance {
     /// Path to a TTF/OTF file used before the built-in monospace font.
     /// Empty = built-in only.
     pub font_file: String,
-    pub gutter_abs_light: String,
-    pub gutter_abs_dark: String,
     pub gutter_rel_light: String,
     pub gutter_rel_dark: String,
     pub gutter_current_light: String,
@@ -192,16 +207,24 @@ impl Default for Appearance {
             canvas_dark: "#282828".to_string(),
             page_gap: 12,
             gutter_width: 48,
-            selection: "#4285f459".to_string(),
-            cursor: "#787878a6".to_string(),
-            search: "#ffd70059".to_string(),
-            search_current: "#ff8c00a6".to_string(),
-            yank_highlight: "#34a85359".to_string(),
+            selection_light: "#4285f459".to_string(),
+            selection_dark: "#4285f459".to_string(),
+            cursor_light: "#787878a6".to_string(),
+            cursor_dark: "#787878a6".to_string(),
+            search_light: "#ffd70059".to_string(),
+            search_dark: "#ffd70059".to_string(),
+            search_current_light: "#ff8c00a6".to_string(),
+            search_current_dark: "#ff8c00a6".to_string(),
+            yank_highlight_light: "#34a85359".to_string(),
+            yank_highlight_dark: "#34a85359".to_string(),
+            selection: None,
+            cursor: None,
+            search: None,
+            search_current: None,
+            yank_highlight: None,
             yank_highlight_ms: 300,
             font_size: 12.0,
             font_file: String::new(),
-            gutter_abs_light: "#777777".to_string(),
-            gutter_abs_dark: "#aaaaaa".to_string(),
             gutter_rel_light: "#777777".to_string(),
             gutter_rel_dark: "#aaaaaa".to_string(),
             gutter_current_light: "#d93025".to_string(),
@@ -436,7 +459,20 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-fn convert(raw: RawConfig) -> Result<Config, ConfigError> {
+fn convert(mut raw: RawConfig) -> Result<Config, ConfigError> {
+    let ap = &mut raw.appearance;
+    for (old, light, dark) in [
+        (ap.selection.take(), &mut ap.selection_light, &mut ap.selection_dark),
+        (ap.cursor.take(), &mut ap.cursor_light, &mut ap.cursor_dark),
+        (ap.search.take(), &mut ap.search_light, &mut ap.search_dark),
+        (ap.search_current.take(), &mut ap.search_current_light, &mut ap.search_current_dark),
+        (ap.yank_highlight.take(), &mut ap.yank_highlight_light, &mut ap.yank_highlight_dark),
+    ] {
+        if let Some(color) = old {
+            *light = color.clone();
+            *dark = color;
+        }
+    }
     let mut tables = KeyTables::default();
     let parse_table = |name: &str, bindings: &HashMap<String, String>| {
         bindings
@@ -690,6 +726,15 @@ mod tests {
         let reloaded = convert(toml::from_str(&config.to_toml()).unwrap()).unwrap();
         assert_eq!(reloaded.keys, config.keys);
         assert_eq!(format!("{:?}", reloaded.appearance), format!("{:?}", config.appearance));
+    }
+
+    #[test]
+    fn old_single_color_key_sets_both_themes() {
+        let raw: RawConfig = toml::from_str("[appearance]\nselection = \"#112233\"\nsearch_dark = \"#445566\"").unwrap();
+        let ap = convert(raw).unwrap().appearance;
+        assert_eq!((ap.selection_light.as_str(), ap.selection_dark.as_str()), ("#112233", "#112233"));
+        assert_eq!(ap.search_dark, "#445566");
+        assert_eq!(ap.search_light, Appearance::default().search_light);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 # ggPdf
 
-Heavily vibecoded minimal keyboard-driven PDF viewer with Vim-style motions and
-text selection, based on PDFium engine.
+Minimal keyboard-driven PDF viewer with Vim-style motions and text selection,
+based on PDFium engine.
 
 <p align="center">
   <img src="assets/icons/icon.svg" alt="ggPdf icon" width="96">
@@ -40,8 +40,8 @@ Build and install (rerun to update):
   `%LOCALAPPDATA%\Programs\ggPdf` and adds Start menu and **Open with** entries.
 
 If PowerShell blocks the script, use
-`powershell -ExecutionPolicy Bypass -File .\install.ps1`. Neither script
-changes your default PDF viewer.
+`powershell -ExecutionPolicy Bypass -File .\install.ps1`. Neither script changes
+your default PDF viewer.
 
 Or run without installing:
 
@@ -97,8 +97,9 @@ ggPdf reads the first existing file of:
 
 [`config.example.toml`](config.example.toml) lists every option and key binding
 with its default. Copy it and edit. An invalid file is reported on stderr and
-the defaults are used. Omitted options keep their defaults. `ggpdf --print-config`
-prints the resolved config, a good starting point for your own file.
+the defaults are used. Omitted options keep their defaults.
+`ggpdf --print-config` prints the resolved config, a good starting point for
+your own file.
 
 ### Appearance
 
@@ -111,12 +112,12 @@ Unknown options are an error.
 
 Bindings are `"<key sequence>" = "<action>"` in four tables:
 
-| Table             | Applies to                                  |
-| ----------------- | ------------------------------------------- |
-| `[keys.document]` | Normal mode (scrolling, file-level keys)    |
-| `[keys.motion]`   | Shared by cursor and selection modes        |
-| `[keys.cursor]`   | Cursor mode: `motion` plus this table       |
-| `[keys.selection]`| `VISUAL` and `VISUAL LINE`: `motion` plus this table |
+| Table              | Applies to                                           |
+| ------------------ | ---------------------------------------------------- |
+| `[keys.document]`  | Normal mode (scrolling, file-level keys)             |
+| `[keys.motion]`    | Shared by cursor and selection modes                 |
+| `[keys.cursor]`    | Cursor mode: `motion` plus this table                |
+| `[keys.selection]` | `VISUAL` and `VISUAL LINE`: `motion` plus this table |
 
 A mode's own table wins over `motion`. A table you leave out keeps its defaults;
 a table you include replaces that table's defaults, so copy it whole. A key
@@ -128,6 +129,10 @@ Old names still load: `[keys.normal]` is `document`, `[keys.visual]` and
 `visual_line_mode`, `normal_mode`, `copy_sentence`, `copy_paragraph` are aliases
 of `*_toggle`, `document_mode`, `yank_sentence`, `yank_paragraph`. An unknown
 action name lists all valid ones.
+
+Highlight colors (`selection`, `cursor`, `search`, `search_current`,
+`yank_highlight`) have `_light` and `_dark` variants. The bare name, for example
+`selection = "#4285f459"`, still works and sets both.
 
 The native app renders its own UI; the old `theme.css` and `style.css` no longer
 apply.

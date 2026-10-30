@@ -223,7 +223,6 @@ impl eframe::App for SpikeApp {
         let tab_bar_color = themed(&ap.tab_bar_light, &ap.tab_bar_dark);
         let tab_active_color = themed(&ap.tab_active_light, &ap.tab_active_dark);
         let tab_inactive_color = themed(&ap.tab_inactive_light, &ap.tab_inactive_dark);
-        let gutter_abs_color = themed(&ap.gutter_abs_light, &ap.gutter_abs_dark);
         let gutter_rel_color = themed(&ap.gutter_rel_light, &ap.gutter_rel_dark);
         let gutter_current_color = themed(&ap.gutter_current_light, &ap.gutter_current_dark);
         let font_size = ap.font_size;
@@ -314,11 +313,12 @@ impl eframe::App for SpikeApp {
         self.collect_render_results(&ctx);
 
         let ap = &self.cfg.appearance;
-        let selection_color = parse_hex_color(&ap.selection, egui::Color32::MAGENTA);
-        let cursor_color = parse_hex_color(&ap.cursor, egui::Color32::MAGENTA);
-        let search_color = parse_hex_color(&ap.search, egui::Color32::MAGENTA);
-        let search_current_color = parse_hex_color(&ap.search_current, egui::Color32::MAGENTA);
-        let yank_color = parse_hex_color(&ap.yank_highlight, egui::Color32::MAGENTA);
+        let pick = |light: &str, dark: &str| parse_hex_color(if self.dark { dark } else { light }, egui::Color32::MAGENTA);
+        let selection_color = pick(&ap.selection_light, &ap.selection_dark);
+        let cursor_color = pick(&ap.cursor_light, &ap.cursor_dark);
+        let search_color = pick(&ap.search_light, &ap.search_dark);
+        let search_current_color = pick(&ap.search_current_light, &ap.search_current_dark);
+        let yank_color = pick(&ap.yank_highlight_light, &ap.yank_highlight_dark);
         let now = ctx.input(|i| i.time);
         if self.yank_flash.is_some_and(|f| now >= f.until) {
             self.yank_flash = None;
@@ -438,7 +438,7 @@ impl eframe::App for SpikeApp {
                                 let (label, color) = match cursor_line {
                                     Some(cl) if cl == i => ((i + 1).to_string(), gutter_current_color),
                                     Some(cl) => ((i as isize - cl as isize).unsigned_abs().to_string(), gutter_rel_color),
-                                    None => ((i + 1).to_string(), gutter_abs_color),
+                                    None => ((i + 1).to_string(), gutter_rel_color),
                                 };
                                 let y = gutter_rect.top() + (lr.top + lr.bottom) * 0.5 * display_scale;
                                 gutter_painter.text(
