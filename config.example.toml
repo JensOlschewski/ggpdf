@@ -25,6 +25,8 @@ cursor_light         = "#2563eb99"
 cursor_dark          = "#60a5fa99"
 search_light         = "#eab30840"
 search_dark          = "#fbbf244d"
+search_current_light = "#ff8c00a6"
+search_current_dark  = "#ff8c00a6"
 
 yank_highlight_light = "#16a34a4d"
 yank_highlight_dark  = "#22c55e59"
