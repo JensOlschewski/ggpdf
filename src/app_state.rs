@@ -5,6 +5,7 @@
 //! through the methods here.
 
 use crate::document::{self, PdfLibrary};
+use crate::finder::{is_pdf_path, FinderState};
 use crate::render_worker::{self, RenderWorker};
 use crate::search::{SearchDirection, SearchMatch};
 use crate::viewer::Viewer;
@@ -13,7 +14,7 @@ use crate::window::bundled_resources;
 use crate::{app, config, input, selection, text};
 use eframe::egui;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -29,10 +30,6 @@ pub struct Tile {
     pub h: i32,
     pub scale: f32,
     pub dark: bool,
-}
-
-fn is_pdf_path(path: &Path) -> bool {
-    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
 }
 
 pub struct SpikeApp {
@@ -111,6 +108,9 @@ pub struct SpikeApp {
     /// `Dispatcher`) is swallowed while this is set, and printable text
     /// events go into `search_query` instead.
     pub search_editing: Option<SearchDirection>,
+    /// `Some` while the `Ctrl+F` finder is open; like `search_editing`, it
+    /// swallows every other key.
+    pub finder: Option<FinderState>,
     /// Unconfirmed command-line text. Escape discards it.
     pub search_draft: String,
     /// Last confirmed query; `n`/`N` repeat it.
@@ -219,6 +219,7 @@ impl SpikeApp {
             notice_until: 0.0,
             loaded_key: None,
             search_editing: None,
+            finder: None,
             search_draft: String::new(),
             search_query: String::new(),
             search_direction: SearchDirection::Forward,
@@ -254,6 +255,16 @@ impl SpikeApp {
     pub fn notify(&mut self, ctx: &egui::Context, text: impl Into<String>) {
         self.notice = text.into();
         self.notice_until = ctx.input(|i| i.time) + 3.0;
+    }
+
+    pub fn open_finder(&mut self, ctx: &egui::Context) {
+        let roots = self.cfg.finder.roots();
+        if roots.is_empty() {
+            self.notify(ctx, "no finder dirs configured");
+            return;
+        }
+        self.dispatcher.reset();
+        self.finder = Some(FinderState::open(roots, self.cfg.finder.max_depth, ctx.clone()));
     }
 
     /// Both the picker and OS drag-and-drop use the same open path. The
@@ -1283,6 +1294,7 @@ mod search_integration_tests {
 #[cfg(test)]
 mod open_file_tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn pdf_extension_is_case_insensitive() {

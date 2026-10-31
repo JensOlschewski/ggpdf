@@ -6,10 +6,11 @@
 //! [`Config::default`] (which always binds `q`/`Esc` to `close`) rather
 //! than failing to start.
 
+use eframe::egui::{Key, Modifiers};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Known input actions. Config key sequences must map to one of these.
 ///
@@ -198,6 +199,20 @@ pub struct Appearance {
     pub tab_active_dark: String,
     pub tab_inactive_light: String,
     pub tab_inactive_dark: String,
+    pub finder_bg_light: String,
+    pub finder_bg_dark: String,
+    pub finder_fg_light: String,
+    pub finder_fg_dark: String,
+    pub finder_selected_bg_light: String,
+    pub finder_selected_bg_dark: String,
+    /// Color of the characters that matched the finder query.
+    pub finder_match_light: String,
+    pub finder_match_dark: String,
+    pub finder_border_light: String,
+    pub finder_border_dark: String,
+    pub finder_width: u32,
+    /// Visible result rows.
+    pub finder_rows: u32,
 }
 
 impl Default for Appearance {
@@ -235,7 +250,109 @@ impl Default for Appearance {
             tab_active_dark: "#ef4444".to_string(),
             tab_inactive_light: "#c8c8c8".to_string(),
             tab_inactive_dark: "#2a2a2a".to_string(),
+            finder_bg_light: "#ffffff".to_string(),
+            finder_bg_dark: "#333333".to_string(),
+            finder_fg_light: "#333333".to_string(),
+            finder_fg_dark: "#eeeeee".to_string(),
+            finder_selected_bg_light: "#2563eb33".to_string(),
+            finder_selected_bg_dark: "#60a5fa40".to_string(),
+            finder_match_light: "#dc2626".to_string(),
+            finder_match_dark: "#ef4444".to_string(),
+            finder_border_light: "#c8c8c8".to_string(),
+            finder_border_dark: "#555555".to_string(),
+            finder_width: 640,
+            finder_rows: 12,
         }
+    }
+}
+
+/// Where the `Ctrl+F` finder looks for PDFs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Finder {
+    /// Root directories to scan; a leading `~` is the home directory.
+    pub dirs: Vec<String>,
+    pub max_depth: usize,
+    /// Key that opens the finder, e.g. `"ctrl+f"`.
+    pub open_key: String,
+    /// Key that opens the native file dialog, e.g. `"ctrl+shift+f"`.
+    pub dialog_key: String,
+    /// Key that closes the finder, e.g. `"ctrl+c"` or `"esc"`.
+    pub close_key: String,
+}
+
+impl Default for Finder {
+    fn default() -> Self {
+        Self {
+            dirs: Vec::new(),
+            max_depth: 4,
+            open_key: "ctrl+f".to_string(),
+            dialog_key: "ctrl+shift+f".to_string(),
+            close_key: "ctrl+c".to_string(),
+        }
+    }
+}
+
+/// A key plus the exact modifiers that must be held with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Chord {
+    pub key: Key,
+    pub modifiers: Modifiers,
+}
+
+impl Chord {
+    /// Parses `"esc"`, `"f"`, `"ctrl+c"`, `"alt+shift+f"`, `"cmd+ctrl+j"`: any
+    /// order and combination of `ctrl`, `alt`, `shift` and `cmd` (the Mac
+    /// Command key), then any egui key name. `control`, `option`, `command`
+    /// and `super` are accepted aliases.
+    fn parse(raw: &str) -> Option<Chord> {
+        let raw = raw.trim().to_ascii_lowercase();
+        let mut modifiers = Modifiers::NONE;
+        let mut name = raw.as_str();
+        while let Some((prefix, rest)) = name.split_once('+') {
+            match prefix {
+                "ctrl" | "control" => modifiers.ctrl = true,
+                "alt" | "option" => modifiers.alt = true,
+                "shift" => modifiers.shift = true,
+                "cmd" | "command" | "super" => modifiers.mac_cmd = true,
+                _ => return None,
+            }
+            name = rest;
+        }
+        let key = if name == "esc" { Key::Escape } else { Key::from_name(name)? };
+        Some(Chord { key, modifiers })
+    }
+
+    pub fn matches(&self, key: Key, modifiers: Modifiers) -> bool {
+        let (held, wanted) = (modifiers, self.modifiers);
+        key == self.key && held.ctrl == wanted.ctrl && held.alt == wanted.alt && held.shift == wanted.shift && held.mac_cmd == wanted.mac_cmd
+    }
+}
+
+impl Finder {
+    pub fn open_chord(&self) -> Chord {
+        Chord::parse(&self.open_key).expect("open_key validated at load")
+    }
+
+    pub fn dialog_chord(&self) -> Chord {
+        Chord::parse(&self.dialog_key).expect("dialog_key validated at load")
+    }
+
+    pub fn close_chord(&self) -> Chord {
+        Chord::parse(&self.close_key).expect("close_key validated at load")
+    }
+
+    /// `dirs` with `~` expanded. Missing directories are kept; the scan skips them.
+    pub fn roots(&self) -> Vec<PathBuf> {
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
+        self.dirs.iter().map(|dir| expand_home(dir, home.as_deref())).collect()
+    }
+}
+
+fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
+    match (path.strip_prefix('~'), home) {
+        (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with(['/', '\\']) => home.join(rest.trim_start_matches(['/', '\\'])),
+        _ => PathBuf::from(path),
     }
 }
 
@@ -252,6 +369,7 @@ pub enum Mode {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub appearance: Appearance,
+    pub finder: Finder,
     tables: KeyTables,
     /// mode -> key sequence -> action
     pub keys: HashMap<Mode, HashMap<String, Action>>,
@@ -376,6 +494,7 @@ impl Default for Config {
         let tables = KeyTables::default();
         Self {
             appearance: Appearance::default(),
+            finder: Finder::default(),
             keys: tables.resolve().expect("default key tables are valid"),
             tables,
         }
@@ -387,6 +506,8 @@ impl Config {
     pub fn to_toml(&self) -> String {
         let mut out = String::from("[appearance]\n");
         out.push_str(&toml::to_string(&self.appearance).expect("appearance serializes"));
+        out.push_str("\n[finder]\n");
+        out.push_str(&toml::to_string(&self.finder).expect("finder serializes"));
         for (name, table) in [
             ("document", &self.tables.document),
             ("motion", &self.tables.motion),
@@ -419,6 +540,8 @@ struct RawConfig {
     #[serde(default)]
     appearance: Appearance,
     #[serde(default)]
+    finder: Finder,
+    #[serde(default)]
     keys: HashMap<String, HashMap<String, String>>,
 }
 
@@ -430,6 +553,7 @@ pub enum ConfigError {
     UnknownAction { mode: String, sequence: String, action: String },
     AmbiguousPrefix { mode: String, shorter: String, longer: String },
     NoEmergencyClose,
+    InvalidFinderKey { name: &'static str, key: String },
 }
 
 impl fmt::Display for ConfigError {
@@ -449,6 +573,9 @@ impl fmt::Display for ConfigError {
                 f,
                 "[keys.{mode}]: \"{shorter}\" is a prefix of \"{longer}\" — ambiguous key sequence"
             ),
+            ConfigError::InvalidFinderKey { name, key } => {
+                write!(f, "[finder] {name} \"{key}\" is not a key (examples: \"ctrl+f\", \"ctrl+shift+f\", \"esc\")")
+            }
             ConfigError::NoEmergencyClose => write!(
                 f,
                 "config binds no key to close/cancel in any mode — refusing to load a config with no way to quit"
@@ -460,6 +587,12 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 fn convert(mut raw: RawConfig) -> Result<Config, ConfigError> {
+    let finder = &raw.finder;
+    for (name, key) in [("open_key", &finder.open_key), ("dialog_key", &finder.dialog_key), ("close_key", &finder.close_key)] {
+        if Chord::parse(key).is_none() {
+            return Err(ConfigError::InvalidFinderKey { name, key: key.clone() });
+        }
+    }
     let ap = &mut raw.appearance;
     for (old, light, dark) in [
         (ap.selection.take(), &mut ap.selection_light, &mut ap.selection_dark),
@@ -513,7 +646,7 @@ fn convert(mut raw: RawConfig) -> Result<Config, ConfigError> {
 
     let keys = tables.resolve()?;
 
-    let config = Config { appearance: raw.appearance, tables, keys };
+    let config = Config { appearance: raw.appearance, finder: raw.finder, tables, keys };
 
     if !config.has_emergency_close() {
         return Err(ConfigError::NoEmergencyClose);
@@ -609,6 +742,64 @@ mod tests {
         let defaults = Config::default();
         assert_eq!(config.keys, defaults.keys);
         assert_eq!(format!("{:?}", config.appearance), format!("{:?}", defaults.appearance));
+        assert_eq!(format!("{:?}", config.finder), format!("{:?}", defaults.finder));
+    }
+
+    #[test]
+    fn finder_defaults_to_no_dirs() {
+        let finder = Config::default().finder;
+        assert!(finder.dirs.is_empty());
+        assert_eq!(finder.max_depth, 4);
+    }
+
+    #[test]
+    fn finder_section_overrides_defaults() {
+        let raw: RawConfig = toml::from_str("[finder]\ndirs = [\"~/papers\"]\nmax_depth = 2").unwrap();
+        let finder = convert(raw).unwrap().finder;
+        assert_eq!(finder.dirs, ["~/papers"]);
+        assert_eq!(finder.max_depth, 2);
+    }
+
+    #[test]
+    fn finder_close_key_defaults_to_ctrl_c_and_accepts_esc() {
+        assert_eq!(Config::default().finder.close_chord(), Chord { key: Key::C, modifiers: Modifiers::CTRL });
+        let raw: RawConfig = toml::from_str("[finder]\nclose_key = \"Esc\"").unwrap();
+        assert_eq!(convert(raw).unwrap().finder.close_chord(), Chord { key: Key::Escape, modifiers: Modifiers::NONE });
+    }
+
+    #[test]
+    fn finder_keys_accept_any_modifier_combination_in_any_order() {
+        let parse = |raw: &str| Chord::parse(raw).unwrap();
+        assert!(parse("alt+f").matches(Key::F, Modifiers::ALT));
+        assert!(!parse("alt+f").matches(Key::F, Modifiers::ALT | Modifiers::SHIFT));
+        assert_eq!(parse("shift+alt+f"), parse("alt+shift+f"));
+        assert_eq!(parse("option+f"), parse("alt+f"));
+        let cmd_ctrl = Modifiers { mac_cmd: true, ctrl: true, ..Modifiers::NONE };
+        assert_eq!(parse("cmd+ctrl+j"), Chord { key: Key::J, modifiers: cmd_ctrl });
+        assert_eq!(parse("f"), Chord { key: Key::F, modifiers: Modifiers::NONE });
+    }
+
+    #[test]
+    fn finder_open_keys_default_to_ctrl_f_and_ctrl_shift_f() {
+        let finder = Config::default().finder;
+        assert_eq!(finder.open_chord(), Chord { key: Key::F, modifiers: Modifiers::CTRL });
+        assert_eq!(finder.dialog_chord(), Chord { key: Key::F, modifiers: Modifiers::CTRL | Modifiers::SHIFT });
+    }
+
+    #[test]
+    fn invalid_finder_close_key_is_rejected() {
+        let raw: RawConfig = toml::from_str("[finder]\nclose_key = \"ctrl+nope\"").unwrap();
+        assert!(matches!(convert(raw).unwrap_err(), ConfigError::InvalidFinderKey { .. }));
+    }
+
+    #[test]
+    fn expand_home_replaces_only_a_leading_tilde() {
+        let home = Path::new("/home/me");
+        assert_eq!(expand_home("~", Some(home)), PathBuf::from("/home/me"));
+        assert_eq!(expand_home("~/papers", Some(home)), PathBuf::from("/home/me/papers"));
+        assert_eq!(expand_home("~other/papers", Some(home)), PathBuf::from("~other/papers"));
+        assert_eq!(expand_home("/abs/~/papers", Some(home)), PathBuf::from("/abs/~/papers"));
+        assert_eq!(expand_home("~/papers", None), PathBuf::from("~/papers"));
     }
 
     #[test]

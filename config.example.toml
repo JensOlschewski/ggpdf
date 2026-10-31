@@ -43,6 +43,30 @@ tab_active_dark      = "#ef4444"
 tab_inactive_light   = "#c8c8c8"
 tab_inactive_dark    = "#2a2a2a"
 
+finder_bg_light          = "#ffffff"
+finder_bg_dark           = "#333333"
+finder_fg_light          = "#333333"
+finder_fg_dark           = "#eeeeee"
+finder_selected_bg_light = "#2563eb33"
+finder_selected_bg_dark  = "#60a5fa40"
+finder_match_light       = "#dc2626"    # characters matching the query
+finder_match_dark        = "#ef4444"
+finder_border_light      = "#c8c8c8"
+finder_border_dark       = "#555555"
+finder_width             = 640
+finder_rows              = 12           # visible result rows
+
+# Fuzzy-finds PDFs under these directories.
+# Keys are any combination of ctrl, alt, shift and cmd (macOS Command) in any
+# order, then a key: "ctrl+f", "alt+shift+f", "cmd+o", "esc". Modifiers must
+# match exactly.
+[finder]
+dirs       = ["~/Downloads/", "~/Documents/"]               # e.g. ["~/Documents", "~/papers"]
+max_depth  = 4                # how many directory levels to descend
+open_key   = "ctrl+f"         # opens the finder
+dialog_key = "ctrl+shift+f"   # opens the native file dialog
+close_key  = "ctrl+c"         # closes the finder, e.g. "esc"
+
 # Key bindings: "<key sequence>" = "<action>".
 # Sequences are space-separated tokens, e.g. "y i s".
 # Within one effective table, a sequence may not be a prefix of another.
