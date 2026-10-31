@@ -6,10 +6,12 @@
 
 use crate::app_state::SpikeApp;
 use crate::color::parse_hex_color;
+use crate::finder::FinderState;
 use crate::search::SearchDirection;
 use crate::viewport::{to_egui_rect, zoom_step, HALF_PAGE_SCROLL, SCALE};
 use crate::{config, input, selection};
 use eframe::egui;
+use std::path::Path;
 
 /// Asks for another frame, same as `ctx.request_repaint()`, except
 /// while this window isn't focused: then it asks again only after a
@@ -67,10 +69,30 @@ impl eframe::App for SpikeApp {
         let mut copy_requested = false;
         let mut confirm_search: Option<SearchDirection> = None;
         let mut open_dialog_requested = false;
+        let mut open_finder_requested = false;
+        let mut finder_confirmed = false;
         let mut dropped_paths = Vec::new();
+        let (open, dialog, close) = (self.cfg.finder.open_chord(), self.cfg.finder.dialog_chord(), self.cfg.finder.close_chord());
+        if let Some(finder) = &mut self.finder {
+            finder.poll();
+        }
         ctx.input(|i| {
             dropped_paths.extend(i.raw.dropped_files.iter().map(|file| file.path().to_path_buf()));
             for event in &i.events {
+                if let Some(finder) = &mut self.finder {
+                    match event {
+                        egui::Event::Key { key, pressed: true, modifiers, .. } if close.matches(*key, *modifiers) => self.finder = None,
+                        egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => finder_confirmed = true,
+                        egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => finder.backspace(),
+                        egui::Event::Key { key: egui::Key::ArrowDown, pressed: true, .. } => finder.move_selection(1),
+                        egui::Event::Key { key: egui::Key::ArrowUp, pressed: true, .. } => finder.move_selection(-1),
+                        egui::Event::Key { key: egui::Key::N, pressed: true, modifiers, .. } if modifiers.ctrl => finder.move_selection(1),
+                        egui::Event::Key { key: egui::Key::P, pressed: true, modifiers, .. } if modifiers.ctrl => finder.move_selection(-1),
+                        egui::Event::Text(text) if !i.modifiers.command && !i.modifiers.ctrl && !i.modifiers.alt => finder.type_text(text),
+                        _ => {}
+                    }
+                    continue;
+                }
                 // While typing a `/`/`?` query, every other key below
                 // (chrome shortcuts, the modal `Dispatcher`) is
                 // swallowed — matches Vim's command-line mode, where
@@ -114,6 +136,18 @@ impl eframe::App for SpikeApp {
                 // single-letter binding — e.g. plain "b" is word_backward
                 // in Cursor mode by default, so the debug box toggle lives
                 // on Cmd+B instead of plain "b".
+                // Configured finder keys win over every built-in shortcut
+                // and never reach the dispatcher, so any key can be used.
+                if let egui::Event::Key { key, pressed: true, modifiers, .. } = event {
+                    if dialog.matches(*key, *modifiers) {
+                        open_dialog_requested = true;
+                        continue;
+                    }
+                    if open.matches(*key, *modifiers) {
+                        open_finder_requested = true;
+                        continue;
+                    }
+                }
                 if let egui::Event::Key { key, pressed: true, .. } = event {
                     match key {
                         egui::Key::Num1 => {
@@ -163,7 +197,6 @@ impl eframe::App for SpikeApp {
                         egui::Key::I if input::dark_mode_shortcut(self.dispatcher.mode(), i.modifiers) && !self.dispatcher.has_pending() => self.dark = !self.dark,
                         egui::Key::B if i.modifiers.command => self.show_boxes = !self.show_boxes,
                         egui::Key::C if i.modifiers.command => copy_requested = true,
-                        egui::Key::O if i.modifiers.ctrl && !i.modifiers.command && !i.modifiers.alt => open_dialog_requested = true,
                         egui::Key::Escape => {
                             // Unconditional mouse-selection clear, on top
                             // of whatever config.rs's "Esc" binding (if
@@ -193,6 +226,15 @@ impl eframe::App for SpikeApp {
         }
         if let Some(direction) = confirm_search {
             self.confirm_search(direction, &ctx);
+        }
+        if open_finder_requested {
+            self.open_finder(&ctx);
+        }
+        if finder_confirmed
+            && let Some(path) = self.finder.as_ref().and_then(|f| f.selected_path()).map(Path::to_path_buf)
+        {
+            self.finder = None;
+            self.open_pdf_paths([path], &ctx);
         }
         // Native file pickers and PDFium both interact with the OS; never
         // run them while holding egui's input lock.
@@ -304,6 +346,10 @@ impl eframe::App for SpikeApp {
                         });
                 });
             request_repaint(&ctx);
+        }
+
+        if let Some(finder) = &self.finder {
+            show_finder(&ctx, finder, &self.cfg.appearance, self.dark);
         }
 
         // zoom is intentionally not part of this key: it's a pure
@@ -551,6 +597,66 @@ impl eframe::App for SpikeApp {
             self.update_tiles(&ctx);
         }
     }
+}
+
+fn show_finder(ctx: &egui::Context, finder: &FinderState, ap: &config::Appearance, dark: bool) {
+    let pick = |light: &str, dark_value: &str| parse_hex_color(if dark { dark_value } else { light }, egui::Color32::MAGENTA);
+    let fg = pick(&ap.finder_fg_light, &ap.finder_fg_dark);
+    let match_color = pick(&ap.finder_match_light, &ap.finder_match_dark);
+    let selected_bg = pick(&ap.finder_selected_bg_light, &ap.finder_selected_bg_dark);
+    let font_id = egui::FontId::monospace(ap.font_size);
+    let row_height = ap.font_size + 6.0;
+    let list_height = row_height * finder.matches.len().clamp(1, ap.finder_rows as usize) as f32;
+
+    egui::Area::new(egui::Id::unique("finder"))
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 60.0))
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(pick(&ap.finder_bg_light, &ap.finder_bg_dark))
+                .stroke((1.0, pick(&ap.finder_border_light, &ap.finder_border_dark)))
+                .corner_radius(4.0)
+                .inner_margin(egui::Margin::same(8))
+                .shadow(egui::epaint::Shadow { offset: [0, 2], blur: 12, spread: 0, color: egui::Color32::from_black_alpha(60) })
+                .show(ui, |ui| {
+                    ui.set_width(ap.finder_width as f32);
+                    ui.label(egui::RichText::new(format!("> {}▏", finder.query)).font(font_id.clone()).color(fg));
+                    ui.add_space(4.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(list_height)
+                        .min_scrolled_height(list_height)
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            for (row, found) in finder.matches.iter().enumerate() {
+                                let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_height), egui::Sense::hover());
+                                let selected = row == finder.selected;
+                                if selected {
+                                    ui.scroll_to_rect(rect, None);
+                                }
+                                if !ui.is_rect_visible(rect) {
+                                    continue;
+                                }
+                                if selected {
+                                    ui.painter().rect_filled(rect, 2.0, selected_bg);
+                                }
+                                let label = &finder.candidates[found.candidate].label;
+                                let painter = ui.painter_at(rect);
+                                let galley = painter.layout_job(highlighted_label(label, &found.indices, &font_id, fg, match_color));
+                                painter.galley(egui::pos2(rect.left() + 4.0, rect.center().y - galley.size().y / 2.0), galley, fg);
+                            }
+                        });
+                });
+        });
+}
+
+/// `label` with the characters at `matched` (character positions) in `match_color`.
+fn highlighted_label(label: &str, matched: &[u32], font_id: &egui::FontId, color: egui::Color32, match_color: egui::Color32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    for (position, ch) in label.chars().enumerate() {
+        let color = if matched.binary_search(&(position as u32)).is_ok() { match_color } else { color };
+        job.append(ch.encode_utf8(&mut [0; 4]), 0.0, egui::TextFormat::simple(font_id.clone(), color));
+    }
+    job
 }
 
 /// Puts the configured font file, if any, ahead of the built-in
