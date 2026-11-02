@@ -91,6 +91,7 @@ pub struct TileResult {
     pub tab: usize,
     pub page: usize,
     pub generation: u64,
+    pub dark: bool,
     pub tile: Option<PreparedTile>,
 }
 
@@ -172,7 +173,7 @@ impl RenderWorker {
                     Ok(job) => job,
                     Err((key, spec, stale)) => {
                         let tile = if stale { None } else { prepare_tile(&spec.document, key.page, spec.scale, spec.window, spec.dark).ok() };
-                        let result = TileResult { tab: key.tab, page: key.page, generation: spec.generation, tile };
+                        let result = TileResult { tab: key.tab, page: key.page, generation: spec.generation, dark: spec.dark, tile };
                         if tile_tx.send(result).is_ok() {
                             if let Some(ctx) = thread_repaint.lock().unwrap().as_ref() {
                                 ctx.request_repaint();

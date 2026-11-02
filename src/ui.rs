@@ -8,7 +8,7 @@ use crate::app_state::SpikeApp;
 use crate::color::parse_hex_color;
 use crate::finder::FinderState;
 use crate::search::SearchDirection;
-use crate::viewport::{to_egui_rect, zoom_step, HALF_PAGE_SCROLL, SCALE};
+use crate::viewport::to_egui_rect;
 use crate::{config, input, selection};
 use eframe::egui;
 use std::path::Path;
@@ -54,25 +54,17 @@ impl eframe::App for SpikeApp {
             }
         }
         let mut resolved_actions: Vec<(config::Action, usize)> = Vec::new();
-        // `copy_selection`/`confirm_search` call `ctx.copy_text`/
-        // `self.notify` (which itself calls `ctx.input`) — real `egui::
-        // Context` methods, not just `self` field writes. Calling either
-        // directly from inside the `ctx.input(|i| {...})` closure below
-        // would re-enter `Context`'s single internal write lock on the
-        // same thread: confirmed by a standalone reproduction to
-        // deadlock and (in a debug build) panic after egui's own 10s
-        // deadlock-detection timeout, not just a theoretical risk. Every
-        // other chrome shortcut here only touches plain `self` fields,
-        // which is why this is the only spot that needs deferring —
-        // collected into flags during the closure, same as
+        // `confirm_search` calls `self.notify` (which itself calls
+        // `ctx.input`), a real `egui::Context` method. Calling it directly
+        // from inside the `ctx.input(|i| {...})` closure below would
+        // re-enter `Context`'s single internal write lock on the same
+        // thread: confirmed by a standalone reproduction to deadlock and
+        // (in a debug build) panic after egui's own 10s deadlock-detection
+        // timeout. It is collected into a flag during the closure, same as
         // `resolved_actions` above, and acted on once it's closed.
-        let mut copy_requested = false;
         let mut confirm_search: Option<SearchDirection> = None;
-        let mut open_dialog_requested = false;
-        let mut open_finder_requested = false;
         let mut finder_confirmed = false;
         let mut dropped_paths = Vec::new();
-        let (open, dialog, close) = (self.cfg.finder.open_chord(), self.cfg.finder.dialog_chord(), self.cfg.finder.close_chord());
         if let Some(finder) = &mut self.finder {
             finder.poll();
         }
@@ -80,15 +72,14 @@ impl eframe::App for SpikeApp {
             dropped_paths.extend(i.raw.dropped_files.iter().map(|file| file.path().to_path_buf()));
             for event in &i.events {
                 if let Some(finder) = &mut self.finder {
-                    match event {
-                        egui::Event::Key { key, pressed: true, modifiers, .. } if close.matches(*key, *modifiers) => self.finder = None,
-                        egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => finder_confirmed = true,
-                        egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => finder.backspace(),
-                        egui::Event::Key { key: egui::Key::ArrowDown, pressed: true, .. } => finder.move_selection(1),
-                        egui::Event::Key { key: egui::Key::ArrowUp, pressed: true, .. } => finder.move_selection(-1),
-                        egui::Event::Key { key: egui::Key::N, pressed: true, modifiers, .. } if modifiers.ctrl => finder.move_selection(1),
-                        egui::Event::Key { key: egui::Key::P, pressed: true, modifiers, .. } if modifiers.ctrl => finder.move_selection(-1),
-                        egui::Event::Text(text) if !i.modifiers.command && !i.modifiers.ctrl && !i.modifiers.alt => finder.type_text(text),
+                    let action = input::token_for_event(event).and_then(|token| self.cfg.finder_keys.get(&token).copied());
+                    match (action, event) {
+                        (Some(config::Action::FinderClose), _) => self.finder = None,
+                        (Some(config::Action::FinderConfirm), _) => finder_confirmed = true,
+                        (Some(config::Action::FinderNext), _) => finder.move_selection(1),
+                        (Some(config::Action::FinderPrev), _) => finder.move_selection(-1),
+                        (_, egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. }) => finder.backspace(),
+                        (_, egui::Event::Text(text)) if !i.modifiers.command && !i.modifiers.ctrl && !i.modifiers.alt => finder.type_text(text),
                         _ => {}
                     }
                     continue;
@@ -115,133 +106,36 @@ impl eframe::App for SpikeApp {
                     }
                     continue;
                 }
-                // `/` starts a forward search, `?` a backward one —
-                // checked before the modal dispatcher further down so
-                // they don't just dead-end as unbound keys (neither is
-                // in `config.rs`'s token vocabulary). Shift is allowed
-                // through (`?` is Shift+/ on a US keyboard), matching
-                // every other plain-key check in this file.
-                if let egui::Event::Text(text) = event {
-                    if !i.modifiers.command && !i.modifiers.ctrl && !i.modifiers.alt && (text == "/" || text == "?") {
-                        self.search_editing = Some(if text == "/" { SearchDirection::Forward } else { SearchDirection::Backward });
-                        self.search_draft.clear();
-                        self.dispatcher.reset();
-                        continue;
-                    }
-                }
-
-                // App-chrome shortcuts (tab/zoom/debug toggles) are kept
-                // modifier-gated or on keys outside config.rs's token
-                // vocabulary, so they never collide with a vim-style
-                // single-letter binding — e.g. plain "b" is word_backward
-                // in Cursor mode by default, so the debug box toggle lives
-                // on Cmd+B instead of plain "b".
-                // Configured finder keys win over every built-in shortcut
-                // and never reach the dispatcher, so any key can be used.
-                if let egui::Event::Key { key, pressed: true, modifiers, .. } = event {
-                    if dialog.matches(*key, *modifiers) {
-                        open_dialog_requested = true;
-                        continue;
-                    }
-                    if open.matches(*key, *modifiers) {
-                        open_finder_requested = true;
-                        continue;
-                    }
-                }
-                if let egui::Event::Key { key, pressed: true, .. } = event {
-                    match key {
-                        egui::Key::Num1 => {
-                            self.app.jump_to_tab(0);
-                            self.dispatcher.reset();
-                        }
-                        egui::Key::Num2 => {
-                            self.app.jump_to_tab(1);
-                            self.dispatcher.reset();
-                        }
-                        egui::Key::Num3 => {
-                            self.app.jump_to_tab(2);
-                            self.dispatcher.reset();
-                        }
-                        egui::Key::Num4 => {
-                            self.app.jump_to_tab(3);
-                            self.dispatcher.reset();
-                        }
-                        egui::Key::Tab if i.modifiers.shift => {
-                            self.app.prev_tab();
-                            self.dispatcher.reset();
-                        }
-                        egui::Key::Tab => {
-                            self.app.next_tab();
-                            self.dispatcher.reset();
-                        }
-                        // Matches keys.js's plainCtrl table exactly:
-                        // Ctrl+K/J zoom in/out, Ctrl+0 resets to 100%,
-                        // Ctrl+U/D half-page scroll. keys.js checks
-                        // ctrlKey && !metaKey && !altKey && !shiftKey;
-                        // egui doesn't expose a held-modifiers check per
-                        // match arm directly, so the `if` guards below do
-                        // the equivalent (shift is allowed through, same
-                        // as keys.js's plainCtrl which also permits it —
-                        // that was a latent inconsistency there too, kept
-                        // for fidelity rather than "fixed" here).
-                        egui::Key::K if i.modifiers.ctrl => {
-                            self.zoom_to(zoom_step(self.zoom, 1), i.pointer.hover_pos());
-                        }
-                        egui::Key::J if i.modifiers.ctrl => self.zoom_to(zoom_step(self.zoom, -1), i.pointer.hover_pos()),
-                        egui::Key::Num0 if i.modifiers.ctrl => self.zoom_to(SCALE, i.pointer.hover_pos()),
-                        egui::Key::U if i.modifiers.ctrl => self.pending_scroll = Some(egui::vec2(0.0, HALF_PAGE_SCROLL)),
-                        egui::Key::D if i.modifiers.ctrl => self.pending_scroll = Some(egui::vec2(0.0, -HALF_PAGE_SCROLL)),
-                        // "i" continues text objects ("y i s") when a sequence is
-                        // pending and in cursor/visual modes; otherwise only
-                        // Normal mode toggles dark.
-                        egui::Key::I if input::dark_mode_shortcut(self.dispatcher.mode(), i.modifiers) && !self.dispatcher.has_pending() => self.dark = !self.dark,
-                        egui::Key::B if i.modifiers.command => self.show_boxes = !self.show_boxes,
-                        egui::Key::C if i.modifiers.command => copy_requested = true,
-                        egui::Key::Escape => {
-                            // Unconditional mouse-selection clear, on top
-                            // of whatever config.rs's "Esc" binding (if
-                            // any) resolves to via the dispatcher below.
-                            self.cursor_idx = None;
-                            self.anchor_idx = None;
-                        }
-                        _ => {}
-                    }
-                }
-
                 // Modal key-sequence dispatch (config.rs-driven). Skip
                 // while any chrome modifier is held so e.g. Cmd+C's text
                 // artifact (if any) can't also feed the dispatcher a "c".
-                if i.modifiers.command || i.modifiers.ctrl || i.modifiers.alt {
+                // A mouse selection in document mode: `y` copies it even though
+                // `y` starts `y i s` there. `v` still enters visual mode with it.
+                if self.dispatcher.mode() == config::Mode::Normal
+                    && self.anchor_idx.is_some()
+                    && !self.dispatcher.has_pending()
+                    && input::token_for_event(event).as_deref() == Some("y")
+                    && let Some(&action) = self.cfg.keys[&config::Mode::Visual].get("y")
+                {
+                    resolved_actions.push((action, 1));
                     continue;
                 }
                 if let Some(token) = input::token_for_event(event)
+                    && (!matches!(event, egui::Event::Text(_)) || !(i.modifiers.command || i.modifiers.ctrl || i.modifiers.alt))
                     && let Some(resolved) = self.dispatcher.feed(&self.cfg, &token)
                 {
                     resolved_actions.push(resolved);
                 }
             }
         });
-        if copy_requested {
-            self.copy_selection(&ctx);
-        }
         if let Some(direction) = confirm_search {
             self.confirm_search(direction, &ctx);
-        }
-        if open_finder_requested {
-            self.open_finder(&ctx);
         }
         if finder_confirmed
             && let Some(path) = self.finder.as_ref().and_then(|f| f.selected_path()).map(Path::to_path_buf)
         {
             self.finder = None;
             self.open_pdf_paths([path], &ctx);
-        }
-        // Native file pickers and PDFium both interact with the OS; never
-        // run them while holding egui's input lock.
-        if open_dialog_requested
-            && let Some(paths) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_files()
-        {
-            self.open_pdf_paths(paths, &ctx);
         }
         self.open_pdf_paths(dropped_paths, &ctx);
         for (action, count) in resolved_actions {
@@ -458,7 +352,8 @@ impl eframe::App for SpikeApp {
                                 ui.add_space(pad);
                                 let gutter_rect = show_gutter.then(|| ui.allocate_exact_size(egui::vec2(gutter_width, size.y), egui::Sense::hover()).0);
                                 let texture = if self.dark { &page.dark_texture } else { &page.texture };
-                                let response = ui.add(egui::Image::new(texture).fit_to_exact_size(size));
+                                let sense = if self.cfg.input.mouse_selection { egui::Sense::click_and_drag() } else { egui::Sense::hover() };
+                                let response = ui.add(egui::Image::new(texture).fit_to_exact_size(size).sense(sense));
                                 (response, gutter_rect)
                             })
                             .inner;
@@ -553,7 +448,8 @@ impl eframe::App for SpikeApp {
                                     painter.rect_filled(r, 0.0, selection_color);
                                 }
                             }
-                            if let Some(idx) = self.cursor_idx
+                            if self.dispatcher.mode() != config::Mode::Normal
+                                && let Some(idx) = self.cursor_idx
                                 && let Some(c) = page.chars.get(idx)
                             {
                                 // A thin outline on one character was
