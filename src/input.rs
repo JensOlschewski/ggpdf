@@ -6,7 +6,7 @@
 //! `apply_action` for which `Action`s currently have a real effect versus
 //! a "not implemented yet" status message.
 
-use crate::config::{Action, Config, Mode};
+use crate::config::{Action, Chord, Config, Mode};
 
 pub struct Dispatcher {
     mode: Mode,
@@ -115,21 +115,16 @@ impl Dispatcher {
     }
 }
 
-/// Whether a plain, unmodified `i` in the current mode should toggle dark
-/// mode rather than start a text object (`is`/`ip` in Cursor/Visual
-/// modes) — only Normal mode has no other use for a bare `i`.
-pub fn dark_mode_shortcut(mode: Mode, modifiers: eframe::egui::Modifiers) -> bool {
-    mode == Mode::Normal && !modifiers.any()
-}
-
 /// Converts an egui input event into a key token matching `config.rs`'s
 /// `KeySeq` vocabulary (space-joined tokens like `"g g"`, `"y i s"`), or
 /// `None` for events that aren't a single dispatchable keypress.
 /// Printable characters come from `Event::Text` (not `Event::Key`) so
 /// shift-adjusted symbols (`^`, `$`, `G`, `V`) and keyboard layout both
 /// resolve correctly without the caller tracking shift state by hand.
+/// Chords with ctrl/alt/cmd and named keys (arrows, Enter, F5, ...) arrive
+/// as `Event::Key` and become tokens like `"ctrl+shift+f"` (see `Chord::token`).
 pub fn token_for_event(event: &eframe::egui::Event) -> Option<String> {
-    use eframe::egui::{Event, Key};
+    use eframe::egui::Event;
     match event {
         Event::Text(text) => {
             let ch = text.chars().next()?;
@@ -139,7 +134,10 @@ pub fn token_for_event(event: &eframe::egui::Event) -> Option<String> {
                 Some(ch.to_string())
             }
         }
-        Event::Key { key: Key::Escape, pressed: true, .. } => Some("Esc".to_string()),
+        Event::Key { key, pressed: true, modifiers, .. } => {
+            let chord = Chord { key: *key, modifiers: *modifiers };
+            chord.is_token().then(|| chord.token())
+        }
         _ => None,
     }
 }
@@ -161,6 +159,19 @@ mod tests {
         assert_eq!(d.feed(&cfg, "0"), Some((Action::LineStart, 1)));
         assert_eq!(d.feed(&cfg, "$"), Some((Action::LineEnd, 1)));
         assert_eq!(d.feed(&cfg, "^"), Some((Action::LineFirstNonBlank, 1)));
+    }
+
+    #[test]
+    fn ctrl_a_prefix_switches_tabs_from_every_mode() {
+        let cfg = Config::default();
+        let mut d = Dispatcher::new();
+        assert_eq!(d.feed(&cfg, "ctrl+a"), None);
+        assert_eq!(d.feed(&cfg, "2"), Some((Action::Tab(1), 1)));
+        assert_eq!(d.feed(&cfg, "ctrl+a"), None);
+        assert_eq!(d.feed(&cfg, "n"), Some((Action::TabNext, 1)));
+        d.feed(&cfg, "c");
+        d.feed(&cfg, "ctrl+a");
+        assert_eq!(d.feed(&cfg, "p"), Some((Action::TabPrev, 1)));
     }
 
     #[test]
@@ -265,14 +276,5 @@ mod tests {
         assert_eq!(d.feed(&cfg, "1"), None);
         assert_eq!(d.feed(&cfg, "0"), None);
         assert_eq!(d.feed(&cfg, "l"), Some((Action::CharacterRight, 10)));
-    }
-
-    #[test]
-    fn dark_mode_shortcut_only_works_in_normal_mode() {
-        for mode in [Mode::Cursor, Mode::Visual, Mode::VisualLine] {
-            assert!(!dark_mode_shortcut(mode, eframe::egui::Modifiers::NONE));
-        }
-        assert!(dark_mode_shortcut(Mode::Normal, eframe::egui::Modifiers::NONE));
-        assert!(!dark_mode_shortcut(Mode::Normal, eframe::egui::Modifiers::CTRL));
     }
 }

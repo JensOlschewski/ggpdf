@@ -19,10 +19,13 @@ font_size   = 14.0            # status line, tab bar, gutter
 # Colors are hex: #rrggbb or #rrggbbaa.
 canvas_light         = "#ededed"    # background behind pages, light theme
 canvas_dark          = "#282828"    # background behind pages, dark theme
+
 selection_light      = "#2563eb33"
 selection_dark       = "#60a5fa40"
+
 cursor_light         = "#2563eb99"
 cursor_dark          = "#60a5fa99"
+
 search_light         = "#eab30840"
 search_dark          = "#fbbf244d"
 search_current_light = "#ff8c00a6"
@@ -36,6 +39,7 @@ gutter_rel_light     = "#c8c8c8"
 gutter_rel_dark      = "#2a2a2a"
 gutter_current_light = "#dc2626"
 gutter_current_dark  = "#ef4444"
+
 tab_bar_light        = "#ededed"
 tab_bar_dark         = "#282828"
 tab_active_light     = "#dc2626"
@@ -49,30 +53,64 @@ finder_fg_light          = "#333333"
 finder_fg_dark           = "#eeeeee"
 finder_selected_bg_light = "#2563eb33"
 finder_selected_bg_dark  = "#60a5fa40"
-finder_match_light       = "#dc2626"    # characters matching the query
+finder_match_light       = "#dc2626"
 finder_match_dark        = "#ef4444"
 finder_border_light      = "#c8c8c8"
 finder_border_dark       = "#555555"
 finder_width             = 640
-finder_rows              = 12           # visible result rows
+finder_rows              = 12
 
 # Fuzzy-finds PDFs under these directories.
-# Keys are any combination of ctrl, alt, shift and cmd (macOS Command) in any
-# order, then a key: "ctrl+f", "alt+shift+f", "cmd+o", "esc". Modifiers must
-# match exactly.
 [finder]
-dirs       = ["~/Downloads/", "~/Documents/"]               # e.g. ["~/Documents", "~/papers"]
+dirs       = []               # e.g. ["~/Documents", "~/papers"]
 max_depth  = 4                # how many directory levels to descend
-open_key   = "ctrl+f"         # opens the finder
-dialog_key = "ctrl+shift+f"   # opens the native file dialog
-close_key  = "ctrl+c"         # closes the finder, e.g. "esc"
+
+[input]
+mouse_selection = true        # dragging selects text and enters visual mode
 
 # Key bindings: "<key sequence>" = "<action>".
 # Sequences are space-separated tokens, e.g. "y i s".
 # Within one effective table, a sequence may not be a prefix of another.
 # At least one binding must be "close" or "cancel".
+# A key is optional modifiers (ctrl, alt, shift, cmd) joined by "+" in any
+# order, then a key name: "j", "ctrl+f", "alt+shift+f", "esc". Modifiers must
+# match exactly.
+
+# Applies in every mode.
+[keys.global]
+"ctrl+f"       = "finder_open"
+"ctrl+shift+f" = "file_dialog"
+"ctrl+k"       = "zoom_in"
+"ctrl+j"       = "zoom_out"
+"ctrl+0"       = "zoom_reset"
+"ctrl+u"       = "half_page_up"
+"ctrl+d"       = "half_page_down"
+"cmd+b"        = "toggle_boxes"
+"/"            = "search_forward"
+"?"            = "search_backward"
+"ctrl+a p" = "tab_prev"
+"ctrl+a n" = "tab_next"
+"ctrl+a 1" = "tab_1"
+"ctrl+a 2" = "tab_2"
+"ctrl+a 3" = "tab_3"
+"ctrl+a 4" = "tab_4"
+"ctrl+a 5" = "tab_5"
+"ctrl+a 6" = "tab_6"
+"ctrl+a 7" = "tab_7"
+"ctrl+a 8" = "tab_8"
+"ctrl+a 9" = "tab_9"
+
+# While the finder is open: a single key each.
+[keys.finder]
+"ctrl+c" = "finder_close"
+"enter"  = "finder_confirm"
+"ctrl+n" = "finder_next"
+"down"   = "finder_next"
+"ctrl+p" = "finder_prev"
+"up"     = "finder_prev"
 
 [keys.document]
+"i"   = "toggle_dark"
 "j"   = "scroll_down"
 "k"   = "scroll_up"
 "g g" = "document_start"
@@ -108,6 +146,7 @@ close_key  = "ctrl+c"         # closes the finder, e.g. "esc"
 "Esc" = "document_mode"
 
 [keys.cursor]
+"i"     = "toggle_dark"
 "y i s" = "yank_sentence"
 "y i p" = "yank_paragraph"
 

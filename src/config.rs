@@ -56,6 +56,25 @@ pub enum Action {
     Yank,
     SearchNext,
     SearchPrev,
+    TabNext,
+    TabPrev,
+    /// Zero-based tab index.
+    Tab(usize),
+    FinderOpen,
+    FinderClose,
+    FinderConfirm,
+    FinderNext,
+    FinderPrev,
+    FileDialog,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    HalfPageUp,
+    HalfPageDown,
+    ToggleBoxes,
+    ToggleDark,
+    SearchForward,
+    SearchBackward,
 }
 
 impl Action {
@@ -97,6 +116,32 @@ impl Action {
         ("yank", Action::Yank),
         ("search_next", Action::SearchNext),
         ("search_prev", Action::SearchPrev),
+        ("tab_next", Action::TabNext),
+        ("tab_prev", Action::TabPrev),
+        ("tab_1", Action::Tab(0)),
+        ("tab_2", Action::Tab(1)),
+        ("tab_3", Action::Tab(2)),
+        ("tab_4", Action::Tab(3)),
+        ("tab_5", Action::Tab(4)),
+        ("tab_6", Action::Tab(5)),
+        ("tab_7", Action::Tab(6)),
+        ("tab_8", Action::Tab(7)),
+        ("tab_9", Action::Tab(8)),
+        ("finder_open", Action::FinderOpen),
+        ("finder_close", Action::FinderClose),
+        ("finder_confirm", Action::FinderConfirm),
+        ("finder_next", Action::FinderNext),
+        ("finder_prev", Action::FinderPrev),
+        ("file_dialog", Action::FileDialog),
+        ("zoom_in", Action::ZoomIn),
+        ("zoom_out", Action::ZoomOut),
+        ("zoom_reset", Action::ZoomReset),
+        ("half_page_up", Action::HalfPageUp),
+        ("half_page_down", Action::HalfPageDown),
+        ("toggle_boxes", Action::ToggleBoxes),
+        ("toggle_dark", Action::ToggleDark),
+        ("search_forward", Action::SearchForward),
+        ("search_backward", Action::SearchBackward),
     ];
 
     /// Canonical (non-alias) names for error messages: the first name
@@ -266,6 +311,19 @@ impl Default for Appearance {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Input {
+    /// Dragging with the mouse selects text and enters visual mode.
+    pub mouse_selection: bool,
+}
+
+impl Default for Input {
+    fn default() -> Self {
+        Self { mouse_selection: true }
+    }
+}
+
 /// Where the `Ctrl+F` finder looks for PDFs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -273,23 +331,11 @@ pub struct Finder {
     /// Root directories to scan; a leading `~` is the home directory.
     pub dirs: Vec<String>,
     pub max_depth: usize,
-    /// Key that opens the finder, e.g. `"ctrl+f"`.
-    pub open_key: String,
-    /// Key that opens the native file dialog, e.g. `"ctrl+shift+f"`.
-    pub dialog_key: String,
-    /// Key that closes the finder, e.g. `"ctrl+c"` or `"esc"`.
-    pub close_key: String,
 }
 
 impl Default for Finder {
     fn default() -> Self {
-        Self {
-            dirs: Vec::new(),
-            max_depth: 4,
-            open_key: "ctrl+f".to_string(),
-            dialog_key: "ctrl+shift+f".to_string(),
-            close_key: "ctrl+c".to_string(),
-        }
+        Self { dirs: Vec::new(), max_depth: 4 }
     }
 }
 
@@ -319,29 +365,45 @@ impl Chord {
             }
             name = rest;
         }
-        let key = if name == "esc" { Key::Escape } else { Key::from_name(name)? };
+        let mut chars = name.chars();
+        let capitalized = chars.next()?.to_uppercase().chain(chars).collect::<String>();
+        let key = Key::ALL
+            .iter()
+            .copied()
+            .find(|key| key.name().eq_ignore_ascii_case(name))
+            .or_else(|| Key::from_name(name))
+            .or_else(|| Key::from_name(&capitalized))?;
         Some(Chord { key, modifiers })
     }
 
-    pub fn matches(&self, key: Key, modifiers: Modifiers) -> bool {
-        let (held, wanted) = (modifiers, self.modifiers);
-        key == self.key && held.ctrl == wanted.ctrl && held.alt == wanted.alt && held.shift == wanted.shift && held.mac_cmd == wanted.mac_cmd
+    /// The dispatcher token for this chord: modifiers in the fixed order
+    /// ctrl, alt, shift, cmd, then the lowercase key name (`"ctrl+shift+f"`).
+    /// A bare Escape is `"Esc"`.
+    pub fn token(&self) -> String {
+        let m = self.modifiers;
+        if self.key == Key::Escape && !m.any() {
+            return "Esc".to_string();
+        }
+        let mut token = String::new();
+        for (held, name) in [(m.ctrl, "ctrl"), (m.alt, "alt"), (m.shift, "shift"), (m.mac_cmd, "cmd")] {
+            if held {
+                token.push_str(name);
+                token.push('+');
+            }
+        }
+        token.push_str(&if self.key == Key::Escape { "esc".to_string() } else { self.key.name().to_lowercase() });
+        token
+    }
+
+    /// Whether a key press is a token of its own. Printable keys without
+    /// ctrl/alt/cmd arrive as text instead.
+    pub fn is_token(&self) -> bool {
+        let m = self.modifiers;
+        m.ctrl || m.alt || m.mac_cmd || (self.key.name().len() > 1 && self.key != Key::Space)
     }
 }
 
 impl Finder {
-    pub fn open_chord(&self) -> Chord {
-        Chord::parse(&self.open_key).expect("open_key validated at load")
-    }
-
-    pub fn dialog_chord(&self) -> Chord {
-        Chord::parse(&self.dialog_key).expect("dialog_key validated at load")
-    }
-
-    pub fn close_chord(&self) -> Chord {
-        Chord::parse(&self.close_key).expect("close_key validated at load")
-    }
-
     /// `dirs` with `~` expanded. Missing directories are kept; the scan skips them.
     pub fn roots(&self) -> Vec<PathBuf> {
         let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
@@ -370,21 +432,34 @@ pub enum Mode {
 pub struct Config {
     pub appearance: Appearance,
     pub finder: Finder,
+    pub input: Input,
     tables: KeyTables,
     /// mode -> key sequence -> action
     pub keys: HashMap<Mode, HashMap<String, Action>>,
+    /// Single key token -> action, while the finder is open.
+    pub finder_keys: HashMap<String, Action>,
 }
 
-/// The four `[keys.*]` tables as written in the config file.
+/// The `[keys.*]` tables as written in the config file.
 /// `document` is Normal mode. Cursor mode is `motion` + `cursor`;
 /// Visual and VisualLine are `motion` + `selection`. A mode's own table
-/// wins over `motion` for the same sequence.
+/// wins over `motion` for the same sequence, and `global` applies under
+/// every mode. `finder` is separate: single keys while the finder is open.
 #[derive(Debug, Clone)]
 struct KeyTables {
+    global: HashMap<String, Action>,
+    finder: HashMap<String, Action>,
     document: HashMap<String, Action>,
     motion: HashMap<String, Action>,
     cursor: HashMap<String, Action>,
     selection: HashMap<String, Action>,
+}
+
+/// Applies user bindings over a default table: unspecified defaults stay,
+/// but a default key for an action the user rebinds is dropped.
+fn overlay(base: &mut HashMap<String, Action>, user: HashMap<String, Action>) {
+    base.retain(|_, a| !user.values().any(|u| u == a));
+    base.extend(user);
 }
 
 fn table(pairs: &[(&str, Action)]) -> HashMap<String, Action> {
@@ -395,9 +470,40 @@ impl Default for KeyTables {
     fn default() -> Self {
         use Action::*;
         Self {
-            // `/`/`?` aren't bindings: typing a search query is free text
-            // handled directly in `main.rs`'s event loop.
+            // Tabs are tmux-style: `ctrl+a` prefix, then `1`-`9`, `p` or `n`.
+            global: table(&[
+                ("ctrl+f", FinderOpen),
+                ("ctrl+shift+f", FileDialog),
+                ("ctrl+k", ZoomIn),
+                ("ctrl+j", ZoomOut),
+                ("ctrl+0", ZoomReset),
+                ("ctrl+u", HalfPageUp),
+                ("ctrl+d", HalfPageDown),
+                ("cmd+b", ToggleBoxes),
+                ("/", SearchForward),
+                ("?", SearchBackward),
+                ("ctrl+a p", TabPrev),
+                ("ctrl+a n", TabNext),
+                ("ctrl+a 1", Tab(0)),
+                ("ctrl+a 2", Tab(1)),
+                ("ctrl+a 3", Tab(2)),
+                ("ctrl+a 4", Tab(3)),
+                ("ctrl+a 5", Tab(4)),
+                ("ctrl+a 6", Tab(5)),
+                ("ctrl+a 7", Tab(6)),
+                ("ctrl+a 8", Tab(7)),
+                ("ctrl+a 9", Tab(8)),
+            ]),
+            finder: table(&[
+                ("ctrl+c", FinderClose),
+                ("enter", FinderConfirm),
+                ("ctrl+n", FinderNext),
+                ("down", FinderNext),
+                ("ctrl+p", FinderPrev),
+                ("up", FinderPrev),
+            ]),
             document: table(&[
+                ("i", ToggleDark),
                 ("j", ScrollDown),
                 ("k", ScrollUp),
                 ("g g", DocumentStart),
@@ -435,7 +541,7 @@ impl Default for KeyTables {
                 ("Esc", NormalMode),
             ]),
             // `y` is unbound here, so `y i s` is a legal sequence.
-            cursor: table(&[("y i s", CopySentence), ("y i p", CopyParagraph)]),
+            cursor: table(&[("i", ToggleDark), ("y i s", CopySentence), ("y i p", CopyParagraph)]),
             // `y` is bound here, so no `y ...` sequence may exist.
             selection: table(&[
                 ("y", Yank),
@@ -449,13 +555,16 @@ impl Default for KeyTables {
 impl KeyTables {
     /// Per-mode bindings after merging, with prefix validation.
     fn resolve(&self) -> Result<HashMap<Mode, HashMap<String, Action>>, ConfigError> {
-        let merged = |own: &HashMap<String, Action>| {
-            let mut m = self.motion.clone();
-            m.extend(own.iter().map(|(k, a)| (k.clone(), *a)));
+        let with_global = |tables: &[&HashMap<String, Action>]| {
+            let mut m = self.global.clone();
+            for table in tables {
+                m.extend(table.iter().map(|(k, a)| (k.clone(), *a)));
+            }
             m
         };
+        let merged = |own: &HashMap<String, Action>| with_global(&[&self.motion, own]);
         let mut keys = HashMap::new();
-        keys.insert(Mode::Normal, self.document.clone());
+        keys.insert(Mode::Normal, with_global(&[&self.document]));
         keys.insert(Mode::Cursor, merged(&self.cursor));
         keys.insert(Mode::Visual, merged(&self.selection));
         keys.insert(Mode::VisualLine, merged(&self.selection));
@@ -495,7 +604,9 @@ impl Default for Config {
         Self {
             appearance: Appearance::default(),
             finder: Finder::default(),
+            input: Input::default(),
             keys: tables.resolve().expect("default key tables are valid"),
+            finder_keys: tables.finder.clone(),
             tables,
         }
     }
@@ -508,7 +619,11 @@ impl Config {
         out.push_str(&toml::to_string(&self.appearance).expect("appearance serializes"));
         out.push_str("\n[finder]\n");
         out.push_str(&toml::to_string(&self.finder).expect("finder serializes"));
+        out.push_str("\n[input]\n");
+        out.push_str(&toml::to_string(&self.input).expect("input serializes"));
         for (name, table) in [
+            ("global", &self.tables.global),
+            ("finder", &self.tables.finder),
             ("document", &self.tables.document),
             ("motion", &self.tables.motion),
             ("cursor", &self.tables.cursor),
@@ -542,6 +657,8 @@ struct RawConfig {
     #[serde(default)]
     finder: Finder,
     #[serde(default)]
+    input: Input,
+    #[serde(default)]
     keys: HashMap<String, HashMap<String, String>>,
 }
 
@@ -553,7 +670,7 @@ pub enum ConfigError {
     UnknownAction { mode: String, sequence: String, action: String },
     AmbiguousPrefix { mode: String, shorter: String, longer: String },
     NoEmergencyClose,
-    InvalidFinderKey { name: &'static str, key: String },
+    InvalidKey { mode: String, sequence: String },
 }
 
 impl fmt::Display for ConfigError {
@@ -562,7 +679,7 @@ impl fmt::Display for ConfigError {
             ConfigError::Io(e) => write!(f, "could not read config file: {e}"),
             ConfigError::Parse(e) => write!(f, "could not parse config TOML: {e}"),
             ConfigError::UnknownMode { mode } => {
-                write!(f, "unknown key mode [keys.{mode}] (expected one of: document, motion, cursor, selection)")
+                write!(f, "unknown key mode [keys.{mode}] (expected one of: global, finder, document, motion, cursor, selection)")
             }
             ConfigError::UnknownAction { mode, sequence, action } => write!(
                 f,
@@ -573,9 +690,11 @@ impl fmt::Display for ConfigError {
                 f,
                 "[keys.{mode}]: \"{shorter}\" is a prefix of \"{longer}\" — ambiguous key sequence"
             ),
-            ConfigError::InvalidFinderKey { name, key } => {
-                write!(f, "[finder] {name} \"{key}\" is not a key (examples: \"ctrl+f\", \"ctrl+shift+f\", \"esc\")")
-            }
+            ConfigError::InvalidKey { mode, sequence } => write!(
+                f,
+                "[keys.{mode}] \"{sequence}\" is not a valid key (examples: \"j\", \"ctrl+shift+f\", \"alt+f\", \"esc\"{})",
+                if mode == "finder" { "; finder keys are a single key" } else { "" }
+            ),
             ConfigError::NoEmergencyClose => write!(
                 f,
                 "config binds no key to close/cancel in any mode — refusing to load a config with no way to quit"
@@ -586,13 +705,19 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
+/// Rewrites every multi-character token of `sequence` as its canonical
+/// chord token (`"Ctrl+Shift+F"` -> `"ctrl+shift+f"`) so it can match what
+/// the dispatcher produces. Single characters are left alone: they are
+/// case-sensitive text (`"G"`).
+fn normalize_sequence(sequence: &str) -> Option<String> {
+    let tokens: Option<Vec<String>> = sequence
+        .split_whitespace()
+        .map(|token| if token.chars().count() == 1 { Some(token.to_string()) } else { Chord::parse(token).map(|chord| chord.token()) })
+        .collect();
+    tokens.map(|tokens| tokens.join(" "))
+}
+
 fn convert(mut raw: RawConfig) -> Result<Config, ConfigError> {
-    let finder = &raw.finder;
-    for (name, key) in [("open_key", &finder.open_key), ("dialog_key", &finder.dialog_key), ("close_key", &finder.close_key)] {
-        if Chord::parse(key).is_none() {
-            return Err(ConfigError::InvalidFinderKey { name, key: key.clone() });
-        }
-    }
     let ap = &mut raw.appearance;
     for (old, light, dark) in [
         (ap.selection.take(), &mut ap.selection_light, &mut ap.selection_dark),
@@ -611,8 +736,11 @@ fn convert(mut raw: RawConfig) -> Result<Config, ConfigError> {
         bindings
             .iter()
             .map(|(seq, action_name)| {
+                let sequence = normalize_sequence(seq)
+                    .filter(|sequence| name != "finder" || !sequence.contains(' '))
+                    .ok_or_else(|| ConfigError::InvalidKey { mode: name.to_string(), sequence: seq.clone() })?;
                 Action::from_name(action_name)
-                    .map(|a| (seq.clone(), a))
+                    .map(|a| (sequence, a))
                     .ok_or_else(|| ConfigError::UnknownAction {
                         mode: name.to_string(),
                         sequence: seq.clone(),
@@ -625,10 +753,12 @@ fn convert(mut raw: RawConfig) -> Result<Config, ConfigError> {
     for (name, bindings) in &raw.keys {
         let parsed = parse_table(name, bindings)?;
         match name.as_str() {
-            "document" | "normal" => tables.document = parsed,
-            "motion" => tables.motion = parsed,
-            "cursor" => tables.cursor = parsed,
-            "selection" => tables.selection = parsed,
+            "global" => overlay(&mut tables.global, parsed),
+            "finder" => overlay(&mut tables.finder, parsed),
+            "document" | "normal" => overlay(&mut tables.document, parsed),
+            "motion" => overlay(&mut tables.motion, parsed),
+            "cursor" => overlay(&mut tables.cursor, parsed),
+            "selection" => overlay(&mut tables.selection, parsed),
             "visual" | "visual_line" => {}
             _ => return Err(ConfigError::UnknownMode { mode: name.clone() }),
         }
@@ -636,7 +766,7 @@ fn convert(mut raw: RawConfig) -> Result<Config, ConfigError> {
 
     // Old [keys.visual] / [keys.visual_line] both map to `selection`.
     if let Some(bindings) = raw.keys.get("visual").or_else(|| raw.keys.get("visual_line")) {
-        tables.selection = parse_table("visual", bindings)?;
+        overlay(&mut tables.selection, parse_table("visual", bindings)?);
         if let (Some(v), Some(l)) = (raw.keys.get("visual"), raw.keys.get("visual_line")) {
             if v != l {
                 eprintln!("ggpdf: [keys.visual] and [keys.visual_line] differ; both are now [keys.selection], using [keys.visual]");
@@ -646,7 +776,7 @@ fn convert(mut raw: RawConfig) -> Result<Config, ConfigError> {
 
     let keys = tables.resolve()?;
 
-    let config = Config { appearance: raw.appearance, finder: raw.finder, tables, keys };
+    let config = Config { appearance: raw.appearance, finder: raw.finder, input: raw.input, finder_keys: tables.finder.clone(), tables, keys };
 
     if !config.has_emergency_close() {
         return Err(ConfigError::NoEmergencyClose);
@@ -746,6 +876,13 @@ mod tests {
     }
 
     #[test]
+    fn mouse_selection_defaults_on_and_can_be_disabled() {
+        assert!(Config::default().input.mouse_selection);
+        let raw: RawConfig = toml::from_str("[input]\nmouse_selection = false").unwrap();
+        assert!(!convert(raw).unwrap().input.mouse_selection);
+    }
+
+    #[test]
     fn finder_defaults_to_no_dirs() {
         let finder = Config::default().finder;
         assert!(finder.dirs.is_empty());
@@ -761,35 +898,44 @@ mod tests {
     }
 
     #[test]
-    fn finder_close_key_defaults_to_ctrl_c_and_accepts_esc() {
-        assert_eq!(Config::default().finder.close_chord(), Chord { key: Key::C, modifiers: Modifiers::CTRL });
-        let raw: RawConfig = toml::from_str("[finder]\nclose_key = \"Esc\"").unwrap();
-        assert_eq!(convert(raw).unwrap().finder.close_chord(), Chord { key: Key::Escape, modifiers: Modifiers::NONE });
+    fn key_tokens_are_canonical_for_any_modifier_combination_in_any_order() {
+        let token = |raw: &str| Chord::parse(raw).unwrap().token();
+        assert_eq!(token("shift+alt+f"), "alt+shift+f");
+        assert_eq!(token("option+f"), "alt+f");
+        assert_eq!(token("cmd+ctrl+j"), "ctrl+cmd+j");
+        assert_eq!(token("Ctrl+Shift+F"), "ctrl+shift+f");
+        assert_eq!(token("Esc"), "Esc");
+        assert_eq!(token("ctrl+esc"), "ctrl+esc");
     }
 
     #[test]
-    fn finder_keys_accept_any_modifier_combination_in_any_order() {
-        let parse = |raw: &str| Chord::parse(raw).unwrap();
-        assert!(parse("alt+f").matches(Key::F, Modifiers::ALT));
-        assert!(!parse("alt+f").matches(Key::F, Modifiers::ALT | Modifiers::SHIFT));
-        assert_eq!(parse("shift+alt+f"), parse("alt+shift+f"));
-        assert_eq!(parse("option+f"), parse("alt+f"));
-        let cmd_ctrl = Modifiers { mac_cmd: true, ctrl: true, ..Modifiers::NONE };
-        assert_eq!(parse("cmd+ctrl+j"), Chord { key: Key::J, modifiers: cmd_ctrl });
-        assert_eq!(parse("f"), Chord { key: Key::F, modifiers: Modifiers::NONE });
+    fn finder_and_tab_keys_default_into_global_and_finder_tables() {
+        let config = Config::default();
+        for mode in [Mode::Normal, Mode::Cursor, Mode::Visual, Mode::VisualLine] {
+            let keys = &config.keys[&mode];
+            assert_eq!(keys.get("ctrl+f"), Some(&Action::FinderOpen), "{mode:?}");
+            assert_eq!(keys.get("ctrl+shift+f"), Some(&Action::FileDialog), "{mode:?}");
+            assert_eq!(keys.get("ctrl+a 3"), Some(&Action::Tab(2)), "{mode:?}");
+        }
+        assert_eq!(config.finder_keys.get("ctrl+c"), Some(&Action::FinderClose));
     }
 
     #[test]
-    fn finder_open_keys_default_to_ctrl_f_and_ctrl_shift_f() {
-        let finder = Config::default().finder;
-        assert_eq!(finder.open_chord(), Chord { key: Key::F, modifiers: Modifiers::CTRL });
-        assert_eq!(finder.dialog_chord(), Chord { key: Key::F, modifiers: Modifiers::CTRL | Modifiers::SHIFT });
+    fn rebinding_global_replaces_the_default_tab_keys_in_every_mode() {
+        let raw: RawConfig = toml::from_str("[keys.global]\n\"Ctrl+H\" = \"tab_prev\"").unwrap();
+        let config = convert(raw).unwrap();
+        for bindings in config.keys.values() {
+            assert_eq!(bindings.get("ctrl+h"), Some(&Action::TabPrev));
+            assert_eq!(bindings.get("ctrl+a p"), None);
+        }
     }
 
     #[test]
-    fn invalid_finder_close_key_is_rejected() {
-        let raw: RawConfig = toml::from_str("[finder]\nclose_key = \"ctrl+nope\"").unwrap();
-        assert!(matches!(convert(raw).unwrap_err(), ConfigError::InvalidFinderKey { .. }));
+    fn invalid_keys_are_rejected() {
+        for toml in ["[keys.global]\n\"ctrl+nope\" = \"tab_next\"", "[keys.finder]\n\"ctrl+a n\" = \"finder_next\""] {
+            let raw: RawConfig = toml::from_str(toml).unwrap();
+            assert!(matches!(convert(raw).unwrap_err(), ConfigError::InvalidKey { .. }), "{toml}");
+        }
     }
 
     #[test]
