@@ -245,7 +245,7 @@ mod tests {
         touch(&root.join("notes.txt"));
         touch(&root.join(".hidden/c.pdf"));
         let labels = scanned_labels(std::slice::from_ref(&root), 4);
-        assert_eq!(labels, ["papers/a.pdf", "papers/sub/b.PDF"].map(|l| Path::new(l).to_string_lossy().into_owned()));
+        assert_eq!(labels, ["papers/a.pdf", "papers/sub/b.PDF"].map(|l| l.replace('/', std::path::MAIN_SEPARATOR_STR)));
         fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
 
