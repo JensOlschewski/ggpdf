@@ -74,7 +74,8 @@ for _ in {1..50}; do
 done
 sleep 1
 sys "set frontmost of (first process whose unix id is $app_pid) to true"
-sys "tell (first process whose unix id is $app_pid) to set {position, size} of window 1 to {{$x, $y}, {$width, $height}}"
+sys "tell (first process whose unix id is $app_pid) to set position of window 1 to {$x, $y}"
+sys "tell (first process whose unix id is $app_pid) to set size of window 1 to {$width, $height}"
 sleep 1
 
 screencapture -v -x -R "$x,$y,$width,$height" "$work/rec.mov" &
