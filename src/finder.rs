@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
+use std::time::SystemTime;
 
 pub fn is_pdf_path(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
@@ -18,6 +19,7 @@ pub struct Candidate {
     /// Shown and matched against: the path below the scan root's parent,
     /// so the root's own name disambiguates results from different roots.
     pub label: String,
+    pub modified: SystemTime,
 }
 
 /// A candidate that matched the query, with the label characters to highlight.
@@ -104,16 +106,28 @@ impl FinderState {
     }
 }
 
-/// Best matches first; an empty query lists everything alphabetically.
+const RECENCY_HALF_LIFE_SECS: f64 = 30.0 * 24.0 * 3600.0;
+const FUZZY_WEIGHT: f64 = 0.7;
+const RECENCY_WEIGHT: f64 = 0.3;
+
+/// 1.0 for a file modified now, halving every 30 days.
+fn recency(modified: SystemTime, now: SystemTime) -> f64 {
+    let age = now.duration_since(modified).unwrap_or_default().as_secs_f64();
+    0.5f64.powf(age / RECENCY_HALF_LIFE_SECS)
+}
+
+/// Best matches first. An empty query lists the newest files first; a
+/// query blends the fuzzy score (relative to the best match) with recency.
 fn rank(matcher: &mut Matcher, query: &str, candidates: &[Candidate]) -> Vec<Match> {
+    let now = SystemTime::now();
     if query.is_empty() {
         let mut order: Vec<usize> = (0..candidates.len()).collect();
-        order.sort_by(|&a, &b| candidates[a].label.cmp(&candidates[b].label));
+        order.sort_by(|&a, &b| candidates[b].modified.cmp(&candidates[a].modified).then_with(|| candidates[a].label.cmp(&candidates[b].label)));
         return order.into_iter().map(|candidate| Match { candidate, indices: Vec::new() }).collect();
     }
     let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
     let mut buffer = Vec::new();
-    let mut scored: Vec<(u32, Match)> = candidates
+    let scored: Vec<(u32, Match)> = candidates
         .iter()
         .enumerate()
         .filter_map(|(candidate, c)| {
@@ -124,9 +138,17 @@ fn rank(matcher: &mut Matcher, query: &str, candidates: &[Candidate]) -> Vec<Mat
             Some((score, Match { candidate, indices }))
         })
         .collect();
-    // Among equal scores the shorter path is the likelier target.
-    scored.sort_by(|(a, am), (b, bm)| b.cmp(a).then_with(|| candidates[am.candidate].label.len().cmp(&candidates[bm.candidate].label.len())));
-    scored.into_iter().map(|(_, found)| found).collect()
+    let best = scored.iter().map(|(score, _)| *score).max().unwrap_or(1).max(1) as f64;
+    let mut blended: Vec<(f64, Match)> = scored
+        .into_iter()
+        .map(|(score, found)| {
+            let total = FUZZY_WEIGHT * (score as f64 / best) + RECENCY_WEIGHT * recency(candidates[found.candidate].modified, now);
+            (total, found)
+        })
+        .collect();
+    // Among equal totals the shorter path is the likelier target.
+    blended.sort_by(|(a, am), (b, bm)| b.total_cmp(a).then_with(|| candidates[am.candidate].label.len().cmp(&candidates[bm.candidate].label.len())));
+    blended.into_iter().map(|(_, found)| found).collect()
 }
 
 /// Walks each root to `max_depth` levels and passes the PDFs of every
@@ -160,7 +182,8 @@ fn walk(dir: &Path, base: &Path, depth: usize, max_depth: usize, visited: &mut H
             subdirs.push(path);
         } else if is_pdf_path(&path) {
             let label = path.strip_prefix(base).unwrap_or(&path).to_string_lossy().into_owned();
-            found.push(Candidate { path, label });
+            let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            found.push(Candidate { path, label, modified });
         }
     }
     if !found.is_empty() {
@@ -178,7 +201,12 @@ mod tests {
     use super::*;
 
     fn candidates(labels: &[&str]) -> Vec<Candidate> {
-        labels.iter().map(|label| Candidate { path: PathBuf::from(label), label: label.to_string() }).collect()
+        labels.iter().map(|label| Candidate { path: PathBuf::from(label), label: label.to_string(), modified: SystemTime::UNIX_EPOCH }).collect()
+    }
+
+    fn aged(label: &str, days: u64) -> Candidate {
+        let modified = SystemTime::now() - std::time::Duration::from_secs(days * 24 * 3600);
+        Candidate { path: PathBuf::from(label), label: label.to_string(), modified }
     }
 
     fn ranked_labels<'a>(query: &str, candidates: &'a [Candidate]) -> Vec<&'a str> {
@@ -232,9 +260,23 @@ mod tests {
     }
 
     #[test]
-    fn empty_query_lists_everything_alphabetically() {
+    fn empty_query_lists_newest_first_then_alphabetically() {
+        let c = vec![aged("old.pdf", 90), aged("new.pdf", 1), aged("mid.pdf", 10)];
+        assert_eq!(ranked_labels("", &c), ["new.pdf", "mid.pdf", "old.pdf"]);
         let c = candidates(&["b.pdf", "a.pdf"]);
         assert_eq!(ranked_labels("", &c), ["a.pdf", "b.pdf"]);
+    }
+
+    #[test]
+    fn query_prefers_newer_file_among_similar_matches() {
+        let c = vec![aged("x/report_a.pdf", 365), aged("x/report_b.pdf", 0)];
+        assert_eq!(ranked_labels("report", &c), ["x/report_b.pdf", "x/report_a.pdf"]);
+    }
+
+    #[test]
+    fn much_better_match_beats_recency() {
+        let c = vec![aged("papers/rxxxxxexxxxxpxxxxxoxxxxxrxxxxxt.pdf", 0), aged("papers/report.pdf", 30)];
+        assert_eq!(ranked_labels("report", &c)[0], "papers/report.pdf");
     }
 
     #[test]

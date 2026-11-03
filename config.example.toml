@@ -62,7 +62,7 @@ finder_rows              = 12
 
 # Fuzzy-finds PDFs under these directories.
 [finder]
-dirs       = ["~/Documents", "~/papers"]        # e.g. ["~/Documents", "~/papers"]
+dirs       = []               # e.g. ["~/Documents", "~/papers"]
 max_depth  = 4                                  # how many directory levels to descend
 
 [input]
