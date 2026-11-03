@@ -5,6 +5,7 @@
 //! through the methods here.
 
 use crate::document::{self, PdfLibrary};
+use crate::finder::{is_pdf_path, FinderState};
 use crate::render_worker::{self, RenderWorker};
 use crate::search::{SearchDirection, SearchMatch};
 use crate::viewer::Viewer;
@@ -13,7 +14,7 @@ use crate::window::bundled_resources;
 use crate::{app, config, input, selection, text};
 use eframe::egui;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -29,10 +30,6 @@ pub struct Tile {
     pub h: i32,
     pub scale: f32,
     pub dark: bool,
-}
-
-fn is_pdf_path(path: &Path) -> bool {
-    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
 }
 
 pub struct SpikeApp {
@@ -111,6 +108,9 @@ pub struct SpikeApp {
     /// `Dispatcher`) is swallowed while this is set, and printable text
     /// events go into `search_query` instead.
     pub search_editing: Option<SearchDirection>,
+    /// `Some` while the `Ctrl+F` finder is open; like `search_editing`, it
+    /// swallows every other key.
+    pub finder: Option<FinderState>,
     /// Unconfirmed command-line text. Escape discards it.
     pub search_draft: String,
     /// Last confirmed query; `n`/`N` repeat it.
@@ -219,6 +219,7 @@ impl SpikeApp {
             notice_until: 0.0,
             loaded_key: None,
             search_editing: None,
+            finder: None,
             search_draft: String::new(),
             search_query: String::new(),
             search_direction: SearchDirection::Forward,
@@ -254,6 +255,16 @@ impl SpikeApp {
     pub fn notify(&mut self, ctx: &egui::Context, text: impl Into<String>) {
         self.notice = text.into();
         self.notice_until = ctx.input(|i| i.time) + 3.0;
+    }
+
+    pub fn open_finder(&mut self, ctx: &egui::Context) {
+        let roots = self.cfg.finder.roots();
+        if roots.is_empty() {
+            self.notify(ctx, "no finder dirs configured");
+            return;
+        }
+        self.dispatcher.reset();
+        self.finder = Some(FinderState::open(roots, self.cfg.finder.max_depth, ctx.clone()));
     }
 
     /// Both the picker and OS drag-and-drop use the same open path. The
@@ -556,18 +567,79 @@ impl SpikeApp {
                 _ => self.pending_scroll = Some(egui::vec2(0.0, SCROLL_MAX)),
             },
             DocumentEnd => self.pending_scroll = Some(egui::vec2(0.0, -SCROLL_MAX)),
+            Close if self.anchor_idx.is_some() || self.cursor_idx.is_some() => {
+                self.anchor_idx = None;
+                self.cursor_idx = None;
+            }
             Close => self.close_requested = true,
             Cancel => {
                 self.cursor_idx = None;
                 self.anchor_idx = None;
             }
             Yank => self.copy_selection(ctx),
+            ZoomIn | ZoomOut | ZoomReset => {
+                let new_zoom = match action {
+                    ZoomIn => crate::viewport::zoom_step(self.zoom, 1),
+                    ZoomOut => crate::viewport::zoom_step(self.zoom, -1),
+                    _ => crate::viewport::SCALE,
+                };
+                self.zoom_to(new_zoom, ctx.input(|i| i.pointer.hover_pos()));
+            }
+            HalfPageUp => self.pending_scroll = Some(egui::vec2(0.0, crate::viewport::HALF_PAGE_SCROLL)),
+            HalfPageDown => self.pending_scroll = Some(egui::vec2(0.0, -crate::viewport::HALF_PAGE_SCROLL)),
+            ToggleBoxes => self.show_boxes = !self.show_boxes,
+            ToggleDark => self.dark = !self.dark,
+            SearchForward | SearchBackward => {
+                let direction = if action == SearchForward { SearchDirection::Forward } else { SearchDirection::Backward };
+                self.search_editing = Some(direction);
+                self.search_draft.clear();
+                self.dispatcher.reset();
+            }
+            TabNext => {
+                self.app.next_tab();
+                self.dispatcher.reset();
+            }
+            TabPrev => {
+                self.app.prev_tab();
+                self.dispatcher.reset();
+            }
+            Tab(index) => {
+                self.app.jump_to_tab(index);
+                self.dispatcher.reset();
+            }
+            FinderOpen => self.open_finder(ctx),
+            // The native file picker and PDFium both interact with the OS,
+            // which is why actions run after egui's input lock is released.
+            FileDialog => {
+                self.dispatcher.reset();
+                if let Some(paths) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_files() {
+                    self.open_pdf_paths(paths, ctx);
+                }
+            }
+            // Finder-table actions are handled where finder input is read.
+            FinderClose | FinderConfirm | FinderNext | FinderPrev => {}
             CursorMode => {
                 // Mode switch already applied by Dispatcher::feed. Clear
                 // any mark — this action also fires for "v"/"V" toggle-off
                 // from Visual/VisualLine mode (config.rs binds those to
                 // CursorMode), which should deselect.
                 let from_visual = self.anchor_idx.is_some();
+                // An existing selection stays; the cursor continues from its end.
+                let mouse_cursor = match (self.active_page, self.cursor_idx) {
+                    (Some(page_idx), Some(flat)) if from_visual => self
+                        .viewer
+                        .as_ref()
+                        .and_then(|v| Self::page_lines(v, page_idx))
+                        .and_then(|lines| Self::cursor_at_flat(lines, flat))
+                        .map(|cursor| (page_idx, cursor)),
+                    _ => None,
+                };
+                if let Some((page_idx, cursor)) = mouse_cursor {
+                    self.anchor_idx = None;
+                    self.page_cursor = Some(cursor);
+                    self.update_cursor_status(page_idx, cursor);
+                    return;
+                }
                 self.anchor_idx = None;
                 // Show page/line/char immediately on entry, not just
                 // after the first motion — otherwise "c" alone looks like
@@ -596,6 +668,8 @@ impl SpikeApp {
             NormalMode => {
                 // Mode switch already applied by Dispatcher::feed; the
                 // status line picks up dispatcher.mode() on every frame.
+                self.anchor_idx = None;
+                self.cursor_idx = None;
             }
             VisualMode | VisualLineMode => {
                 // Mode switch already applied by Dispatcher::feed. If
@@ -609,7 +683,17 @@ impl SpikeApp {
                 // positions in both Visual and VisualLine — the linewise
                 // *display*/copy expansion to whole lines happens in
                 // `display_selected_range`, not here.
-                if self.anchor_idx.is_none() {
+                if let (Some(page_idx), Some(flat), true) = (self.active_page, self.cursor_idx, self.anchor_idx.is_some()) {
+                    // A mouse selection: motions must continue from its end.
+                    let cursor = self
+                        .viewer
+                        .as_ref()
+                        .and_then(|v| Self::page_lines(v, page_idx))
+                        .and_then(|lines| Self::cursor_at_flat(lines, flat));
+                    if cursor.is_some() {
+                        self.page_cursor = cursor;
+                    }
+                } else if self.anchor_idx.is_none() {
                     if let Some(page_idx) = self.keyboard_page() {
                         if let Some(lines) = Self::page_lines(self.viewer.as_ref().unwrap(), page_idx).filter(|l| !l.is_empty()) {
                             let cursor = self.cursor_for_page(page_idx);
@@ -915,7 +999,7 @@ impl SpikeApp {
                 let (w, h) = (tile.image.width() as i32, tile.image.height() as i32);
                 let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], tile.image.as_raw());
                 let texture = ctx.load_texture(format!("tile-{}-{}", result.tab, result.page), image, egui::TextureOptions::LINEAR);
-                self.tiles.insert(key, Tile { texture, x: tile.x, y: tile.y, w, h, scale: tile.scale, dark: self.dark });
+                self.tiles.insert(key, Tile { texture, x: tile.x, y: tile.y, w, h, scale: tile.scale, dark: result.dark });
             }
             ctx.request_repaint();
         }
@@ -1138,6 +1222,13 @@ impl SpikeApp {
         Some((a.min(b), a.max(b)))
     }
 
+    /// Inverse of `flat_index`.
+    pub fn cursor_at_flat(lines: &[selection::Line], flat: usize) -> Option<selection::Cursor> {
+        let line = Self::line_containing_flat(lines, flat)?;
+        let before: usize = lines[..line].iter().map(|l| l.chars.len()).sum();
+        Some(selection::Cursor { line, character: flat - before })
+    }
+
     /// Which line a flat `page.chars` index falls in, or `None` if out
     /// of range. Mirrors the offset accounting `selection_span_rects`
     /// and `flat_index` already use.
@@ -1283,6 +1374,7 @@ mod search_integration_tests {
 #[cfg(test)]
 mod open_file_tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn pdf_extension_is_case_insensitive() {

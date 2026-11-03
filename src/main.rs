@@ -14,6 +14,7 @@ mod color;
 mod config;
 mod dev_tools;
 mod document;
+mod finder;
 mod input;
 #[cfg(target_os = "macos")]
 mod macos_documents;

@@ -14,15 +14,18 @@ gutter_width = 48             # left gutter width
 
 # Text
 font_file = ""                # empty = built-in font
-font_size   = 14.0            # status line, tab bar, gutter
+font_size   = 16.0            # status line, tab bar, gutter
 
 # Colors are hex: #rrggbb or #rrggbbaa.
 canvas_light         = "#ededed"    # background behind pages, light theme
 canvas_dark          = "#282828"    # background behind pages, dark theme
+
 selection_light      = "#2563eb33"
 selection_dark       = "#60a5fa40"
+
 cursor_light         = "#2563eb99"
 cursor_dark          = "#60a5fa99"
+
 search_light         = "#eab30840"
 search_dark          = "#fbbf244d"
 search_current_light = "#ff8c00a6"
@@ -32,23 +35,78 @@ yank_highlight_light = "#16a34a4d"
 yank_highlight_dark  = "#22c55e59"
 yank_highlight_ms    = 150
 
-gutter_rel_light     = "#c8c8c8"
-gutter_rel_dark      = "#2a2a2a"
+gutter_rel_light     = "#282828"
+gutter_rel_dark      = "#ededed"
 gutter_current_light = "#dc2626"
 gutter_current_dark  = "#ef4444"
+
 tab_bar_light        = "#ededed"
 tab_bar_dark         = "#282828"
 tab_active_light     = "#dc2626"
 tab_active_dark      = "#ef4444"
-tab_inactive_light   = "#c8c8c8"
-tab_inactive_dark    = "#2a2a2a"
+tab_inactive_light   = "#282828"
+tab_inactive_dark    = "#ededed"
+
+finder_bg_light          = "#ffffff"
+finder_bg_dark           = "#333333"
+finder_fg_light          = "#333333"
+finder_fg_dark           = "#ededed"
+finder_selected_bg_light = "#2563eb33"
+finder_selected_bg_dark  = "#60a5fa40"
+finder_match_light       = "#dc2626"
+finder_match_dark        = "#ef4444"
+finder_border_light      = "#c8c8c8"
+finder_border_dark       = "#555555"
+finder_width             = 640
+finder_rows              = 12
+
+# Fuzzy-finds PDFs under these directories.
+[finder]
+dirs       = []               # e.g. ["~/Documents", "~/papers"]
+max_depth  = 4                                  # how many directory levels to descend
+
+[input]
+mouse_selection = true        # dragging selects text and enters visual mode
 
 # Key bindings: "<key sequence>" = "<action>".
 # Sequences are space-separated tokens, e.g. "y i s".
-# Within one effective table, a sequence may not be a prefix of another.
-# At least one binding must be "close" or "cancel".
+# Your entries are merged over the defaults per key: list only what you change.
+# Rebinding an action also removes that action's default key.
+
+# Applies in every mode.
+[keys.global]
+"ctrl+f"       = "finder_open"
+"ctrl+shift+f" = "file_dialog"
+"ctrl+k"       = "zoom_in"
+"ctrl+j"       = "zoom_out"
+"ctrl+0"       = "zoom_reset"
+"ctrl+u"       = "half_page_up"
+"ctrl+d"       = "half_page_down"
+"cmd+b"        = "toggle_boxes"
+"/"            = "search_forward"
+"?"            = "search_backward"
+"ctrl+a p" = "tab_prev"
+"ctrl+a n" = "tab_next"
+"ctrl+a 1" = "tab_1"
+"ctrl+a 2" = "tab_2"
+"ctrl+a 3" = "tab_3"
+"ctrl+a 4" = "tab_4"
+"ctrl+a 5" = "tab_5"
+"ctrl+a 6" = "tab_6"
+"ctrl+a 7" = "tab_7"
+"ctrl+a 8" = "tab_8"
+"ctrl+a 9" = "tab_9"
+
+[keys.finder]
+"ctrl+c" = "finder_close"
+"enter"  = "finder_confirm"
+"ctrl+n" = "finder_next"
+"down"   = "finder_next"
+"ctrl+p" = "finder_prev"
+"up"     = "finder_prev"
 
 [keys.document]
+"i"   = "toggle_dark"
 "j"   = "scroll_down"
 "k"   = "scroll_up"
 "g g" = "document_start"

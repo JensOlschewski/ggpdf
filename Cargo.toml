@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 eframe = { version = "0.37.0", features = ["persistence"] }
 image = "0.25.10"
+nucleo-matcher = "0.3.1"
 pdfium-render = "0.9.4"
 rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
