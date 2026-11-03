@@ -14,7 +14,7 @@ gutter_width = 48             # left gutter width
 
 # Text
 font_file = ""                # empty = built-in font
-font_size   = 14.0            # status line, tab bar, gutter
+font_size   = 16.0            # status line, tab bar, gutter
 
 # Colors are hex: #rrggbb or #rrggbbaa.
 canvas_light         = "#ededed"    # background behind pages, light theme
@@ -35,8 +35,8 @@ yank_highlight_light = "#16a34a4d"
 yank_highlight_dark  = "#22c55e59"
 yank_highlight_ms    = 150
 
-gutter_rel_light     = "#c8c8c8"
-gutter_rel_dark      = "#2a2a2a"
+gutter_rel_light     = "#282828"
+gutter_rel_dark      = "#ededed"
 gutter_current_light = "#dc2626"
 gutter_current_dark  = "#ef4444"
 
@@ -44,13 +44,13 @@ tab_bar_light        = "#ededed"
 tab_bar_dark         = "#282828"
 tab_active_light     = "#dc2626"
 tab_active_dark      = "#ef4444"
-tab_inactive_light   = "#c8c8c8"
-tab_inactive_dark    = "#2a2a2a"
+tab_inactive_light   = "#282828"
+tab_inactive_dark    = "#ededed"
 
 finder_bg_light          = "#ffffff"
 finder_bg_dark           = "#333333"
 finder_fg_light          = "#333333"
-finder_fg_dark           = "#eeeeee"
+finder_fg_dark           = "#ededed"
 finder_selected_bg_light = "#2563eb33"
 finder_selected_bg_dark  = "#60a5fa40"
 finder_match_light       = "#dc2626"
@@ -62,19 +62,16 @@ finder_rows              = 12
 
 # Fuzzy-finds PDFs under these directories.
 [finder]
-dirs       = []               # e.g. ["~/Documents", "~/papers"]
-max_depth  = 4                # how many directory levels to descend
+dirs       = ["~/Documents", "~/papers"]        # e.g. ["~/Documents", "~/papers"]
+max_depth  = 4                                  # how many directory levels to descend
 
 [input]
 mouse_selection = true        # dragging selects text and enters visual mode
 
 # Key bindings: "<key sequence>" = "<action>".
 # Sequences are space-separated tokens, e.g. "y i s".
-# Within one effective table, a sequence may not be a prefix of another.
-# At least one binding must be "close" or "cancel".
-# A key is optional modifiers (ctrl, alt, shift, cmd) joined by "+" in any
-# order, then a key name: "j", "ctrl+f", "alt+shift+f", "esc". Modifiers must
-# match exactly.
+# Your entries are merged over the defaults per key: list only what you change.
+# Rebinding an action also removes that action's default key.
 
 # Applies in every mode.
 [keys.global]
@@ -100,7 +97,6 @@ mouse_selection = true        # dragging selects text and enters visual mode
 "ctrl+a 8" = "tab_8"
 "ctrl+a 9" = "tab_9"
 
-# While the finder is open: a single key each.
 [keys.finder]
 "ctrl+c" = "finder_close"
 "enter"  = "finder_confirm"
@@ -146,7 +142,6 @@ mouse_selection = true        # dragging selects text and enters visual mode
 "Esc" = "document_mode"
 
 [keys.cursor]
-"i"     = "toggle_dark"
 "y i s" = "yank_sentence"
 "y i p" = "yank_paragraph"
 
