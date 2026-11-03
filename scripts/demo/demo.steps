@@ -1,0 +1,54 @@
+# One step per line. Blank lines and # comments are ignored.
+#   sleep SECONDS      wait
+#   type TEXT          type characters one by one (e.g. "gg", "3j")
+#   key NAME           esc | return | tab
+#   combo MOD+KEY      ctrl+d, ctrl+shift+f, ...  (mods: ctrl shift cmd alt)
+sleep 1.5
+
+# Scroll
+type j
+type j
+type j
+sleep 0.4
+combo ctrl+d
+sleep 0.6
+combo ctrl+d
+sleep 0.8
+type gg
+sleep 0.8
+
+# Zoom
+combo ctrl+k
+sleep 0.4
+combo ctrl+k
+sleep 0.8
+combo ctrl+0
+sleep 0.8
+
+# Dark mode
+type i
+sleep 1.2
+type i
+sleep 0.8
+
+# Text cursor mode and word motions
+type c
+sleep 0.6
+type 3l
+sleep 0.4
+type w
+sleep 0.3
+type w
+sleep 0.3
+type j
+sleep 0.8
+
+# Visual selection of a sentence, then copy
+type v
+sleep 0.4
+type is
+sleep 1.2
+type y
+sleep 1
+key esc
+sleep 1
