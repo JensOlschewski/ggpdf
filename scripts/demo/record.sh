@@ -10,8 +10,8 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-steps="${1:-$root/scripts/demo/handling.steps}"
-out="${2:-$root/docs/assets/ggpdf-handling.gif}"
+steps="${1:-$root/scripts/demo/selection.steps}"
+out="${2:-$root/docs/assets/ggpdf-selection.gif}"
 pdf="${DEMO_PDF:-$root/assets/test-pdfs/letter.pdf}"
 
 # Size of a single full-screen AeroSpace tile on a 1280x800 pt display

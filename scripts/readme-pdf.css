@@ -1,0 +1,55 @@
+/* GitHub-like look for scripts/readme-pdf.sh. */
+@page {
+  size: A4;
+  margin: 18mm 16mm;
+}
+
+body {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  color: #1f2328;
+  font-family: -apple-system, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+  font-size: 10.5pt;
+  line-height: 1.5;
+}
+
+h1, h2, h3 {
+  margin: 1.4em 0 0.6em;
+  font-weight: 600;
+  line-height: 1.25;
+  break-after: avoid;
+}
+h1 { font-size: 2em; padding-bottom: 0.3em; border-bottom: 1px solid #d1d9e0; }
+h2 { font-size: 1.5em; padding-bottom: 0.3em; border-bottom: 1px solid #d1d9e0; }
+h3 { font-size: 1.25em; }
+h1:first-child { margin-top: 0; }
+
+p, ul, ol, table, pre { margin: 0 0 1em; }
+
+a { color: #0969da; text-decoration: none; }
+
+code {
+  padding: 0.15em 0.35em;
+  border-radius: 6px;
+  background: #eff1f3;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 85%;
+}
+pre {
+  padding: 12px 16px;
+  border-radius: 6px;
+  background: #f6f8fa;
+  overflow: hidden;
+  white-space: pre-wrap;
+  break-inside: avoid;
+}
+pre code { padding: 0; background: none; font-size: 85%; }
+
+table { border-collapse: collapse; break-inside: avoid; }
+th, td { padding: 6px 13px; border: 1px solid #d1d9e0; }
+th { font-weight: 600; }
+tr:nth-child(2n) { background: #f6f8fa; }
+
+img { max-width: 100%; }
+td img { display: block; margin: 0 auto; }
