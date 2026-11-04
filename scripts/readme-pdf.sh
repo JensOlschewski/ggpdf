@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Builds assets/readme.pdf from README.md: the document ggPdf opens when
+# Builds assets/test-pdfs/readme.pdf from README.md: the document ggPdf opens when
 # started without a file. Rerun after editing README.md.
 # Usage: scripts/readme-pdf.sh [output.pdf]
 # Needs pandoc and Google Chrome (or Chromium; set CHROME to its binary).
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-out="${1:-$root/assets/readme.pdf}"
+out="${1:-$root/assets/test-pdfs/readme.pdf}"
 
 chrome="${CHROME:-}"
 if [ -z "$chrome" ]; then

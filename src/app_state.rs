@@ -154,7 +154,7 @@ pub struct YankFlash {
 
 impl SpikeApp {
     /// `initial_paths` is opened as tabs in order; if empty, falls back
-    /// to `assets/readme.pdf`, the README rendered by
+    /// to `assets/test-pdfs/readme.pdf`, the README rendered by
     /// `scripts/readme-pdf.sh` (not the dev test fixtures, which include a two-column paper, a
     /// rotated page, and a blank-shapes page; opening all four by
     /// default is confusing for a normal launch and was the direct
@@ -171,7 +171,7 @@ impl SpikeApp {
         let paths: Vec<&str> = if initial_paths.is_empty() {
             fallback = bundled_resources()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join("assets/readme.pdf");
+                .join("assets/test-pdfs/readme.pdf");
             vec![fallback.to_str().expect("bundle resource path is UTF-8")]
         } else {
             initial_paths.iter().map(String::as_str).collect()

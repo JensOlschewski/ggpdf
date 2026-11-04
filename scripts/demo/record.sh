@@ -99,7 +99,7 @@ fi
 # Fresh config dir so the demo runs with default settings and keys. Only the
 # finder dirs are set, so ctrl+f lists the example PDFs.
 mkdir -p "$work/config/ggpdf" "$work/home"
-printf '[finder]\ndirs = ["%s", "%s"]\nmax_depth = 1\n' "$root/assets" "$root/assets/test-pdfs" >"$work/config/ggpdf/config.toml"
+printf '[finder]\ndirs = ["%s"]\n' "$root/assets/test-pdfs" >"$work/config/ggpdf/config.toml"
 XDG_CONFIG_HOME="$work/config" HOME="$work/home" PDFIUM_LIB_DIR="$root/pdfium" \
   "$root/target/release/ggpdf" "$pdf" >/dev/null 2>&1 &
 app_pid=$!
