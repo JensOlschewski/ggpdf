@@ -112,7 +112,7 @@ impl eframe::App for SpikeApp {
                 // A mouse selection in document mode: `y` copies it even though
                 // `y` starts `y i s` there. `v` still enters visual mode with it.
                 if self.dispatcher.mode() == config::Mode::Normal
-                    && self.anchor_idx.is_some()
+                    && self.has_mouse_selection()
                     && !self.dispatcher.has_pending()
                     && input::token_for_event(event).as_deref() == Some("y")
                     && let Some(&action) = self.cfg.keys[&config::Mode::Visual].get("y")

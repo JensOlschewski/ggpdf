@@ -1,10 +1,11 @@
 //! Attach document callbacks to winit's *existing* NSApplicationDelegate.
 //! Replacing it crashes winit when it processes its next event.
 use objc2::ffi;
+use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{msg_send, sel};
 use objc2_app_kit::NSApplication;
-use objc2_foundation::{NSArray, MainThreadMarker, NSString, NSURL};
+use objc2_foundation::{NSArray, MainThreadMarker, NSDictionary, NSString, NSUserDefaults, NSURL};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -80,4 +81,10 @@ pub fn install(sender: Sender<Vec<PathBuf>>, repaint: Arc<Mutex<Option<eframe::e
             c"v@:@@".as_ptr())), 0);
     }
     DELIVERY.set((sender, repaint)).expect("document handler registered twice");
+    // AppKit also turns command-line file arguments into openFile(s) calls.
+    // main.rs already opens those, so each would get a second tab.
+    let key = NSString::from_str("NSTreatUnknownArgumentsAsOpen");
+    let no = Retained::into_super(Retained::into_super(NSString::from_str("NO")));
+    let defaults = NSDictionary::from_vec(&[&*key], vec![no]);
+    unsafe { NSUserDefaults::standardUserDefaults().registerDefaults(&defaults) };
 }
