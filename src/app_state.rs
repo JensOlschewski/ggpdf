@@ -154,8 +154,8 @@ pub struct YankFlash {
 
 impl SpikeApp {
     /// `initial_paths` is opened as tabs in order; if empty, falls back
-    /// to a single plain example document (one page, ordinary prose —
-    /// not the dev test fixtures, which include a two-column paper, a
+    /// to `assets/test-pdfs/readme.pdf`, the README rendered by
+    /// `scripts/readme-pdf.sh` (not the dev test fixtures, which include a two-column paper, a
     /// rotated page, and a blank-shapes page; opening all four by
     /// default is confusing for a normal launch and was the direct
     /// cause of an earlier live-testing round landing on the blank page
@@ -171,7 +171,7 @@ impl SpikeApp {
         let paths: Vec<&str> = if initial_paths.is_empty() {
             fallback = bundled_resources()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join("assets/test-pdfs/letter.pdf");
+                .join("assets/test-pdfs/readme.pdf");
             vec![fallback.to_str().expect("bundle resource path is UTF-8")]
         } else {
             initial_paths.iter().map(String::as_str).collect()
@@ -1408,7 +1408,7 @@ mod open_file_tests {
         let library = document::test_library();
         let mut viewer = SpikeApp::new(library, config::Config::default(), &[]);
         let ctx = egui::Context::default();
-        assert_eq!(viewer.app.tab_label(0), Some("letter.pdf"));
+        assert_eq!(viewer.app.tab_label(0), Some("readme.pdf"));
         viewer.open_document_event(vec![PathBuf::from("assets/test-pdfs/rotated.pdf")], &ctx);
         assert_eq!(viewer.app.tab_count(), 1);
         assert_eq!(viewer.app.tab_label(0), Some("rotated.pdf"));

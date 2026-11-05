@@ -18,7 +18,7 @@ pub fn bundled_resources() -> Option<PathBuf> {
     {
         let directory = executable.parent()?;
         return (directory.join("pdfium/pdfium.dll").is_file()
-            && directory.join("assets/test-pdfs/letter.pdf").is_file())
+            && directory.join("assets/test-pdfs/readme.pdf").is_file())
             .then(|| directory.to_path_buf());
     }
     #[cfg(target_os = "macos")]

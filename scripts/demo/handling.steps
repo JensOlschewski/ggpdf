@@ -1,0 +1,85 @@
+# One step per line. Blank lines and # comments are ignored.
+#   sleep SECONDS      wait
+#   type TEXT          type characters one by one (e.g. "gg", "3j")
+#   key NAME           esc | return | tab
+#   combo MOD+KEY      ctrl+d, ctrl+shift+f, ...  (mods: ctrl shift cmd alt)
+#   caption TEXT       show TEXT in the GIF until the next caption step, a bare "caption" clears it
+
+# Zoom
+sleep 1.5
+caption Zooming out ⌃J
+sleep 0.5
+combo ctrl+j
+sleep 0.5
+combo ctrl+j
+sleep 1.5
+caption Zooming in ⌃K
+sleep 0.5
+combo ctrl+k
+sleep 0.5
+combo ctrl+k
+sleep 0.5
+combo ctrl+k
+sleep 2.5
+
+# FZF
+caption Fuzz trough predefined directories
+sleep 0.5
+combo ctrl+f
+sleep 0.5
+type readme
+sleep 1.0
+key return
+sleep 2.5
+
+# Pane Switching
+caption Switch between pdfs in tmux style
+sleep 0.5
+combo ctrl+a
+type 1
+sleep 1.0
+combo ctrl+a
+type 2
+sleep 1.0
+combo ctrl+a
+type 1
+sleep 1.0
+combo ctrl+a
+type 2
+sleep 2.5
+
+# Page Jump
+caption Jump to page 3 with  3gg
+sleep 1.0
+type 3gg
+sleep 2.5
+
+# Dark mode
+caption Dark mode
+sleep 1.0
+type i
+combo ctrl+d
+sleep 0.5
+combo ctrl+d
+sleep 0.5
+combo ctrl+d
+sleep 1.5
+type i
+sleep 1.0
+
+# Search mode
+caption Search vim like with / and ?
+sleep 1.0
+type gg
+sleep 1.0
+type /
+sleep 1.0
+type ggpdf
+key return
+sleep 1.0
+type n
+sleep 1.0
+type n
+sleep 1.0
+type n
+sleep 2.0

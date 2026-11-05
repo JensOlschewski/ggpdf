@@ -1,0 +1,79 @@
+# One step per line. Blank lines and # comments are ignored.
+#   sleep SECONDS      wait
+#   type TEXT          type characters one by one (e.g. "gg", "3j")
+#   key NAME           esc | return | tab
+#   combo MOD+KEY      ctrl+d, ctrl+shift+f, ...  (mods: ctrl shift cmd alt)
+#   caption TEXT       show TEXT in the GIF until the next caption step, a bare "caption" clears it
+
+# Yank document mode
+move 625 500
+sleep 0.5
+caption Yanking inside sentence yis
+sleep 1.5
+type yis
+sleep 1.5
+caption Yanking inside paragraph yip
+sleep 1.5
+type yip
+sleep 1.5
+caption Yank follows mouse, nearest text object
+move 100 650
+sleep 1.5
+type yis
+sleep 1.5
+type yip
+sleep 2.5
+
+# Cursor mode
+caption Cursor mode with c
+sleep 1.5
+type c
+sleep 1.5
+caption Move pdf cursor like vim magician
+sleep 1.5
+type 3j
+sleep 0.5
+type 3w
+sleep 0.5
+type 3j
+sleep 0.5
+type 3k
+sleep 0.5
+type 3j
+sleep 0.5
+type 3k
+sleep 0.5
+type E
+sleep 0.2
+type B
+sleep 0.2
+type E
+sleep 0.2
+type B
+sleep 1.5
+
+# Visual mode
+caption Visual mode mode with v
+sleep 1.5
+type v
+sleep 1.5
+caption Highlight fast
+sleep 1.5
+type 3w
+sleep 0.5
+type 3w
+sleep 0.5
+type 3w
+sleep 0.5
+type 3w
+sleep 1.5
+caption Yank fast with y
+sleep 1.5
+type y
+caption Visual line mode with shift+v
+sleep 1.5
+combo shift+v
+sleep 1.5
+type 2j
+sleep 1.5
+type y
