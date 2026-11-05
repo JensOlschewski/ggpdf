@@ -19,6 +19,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const TILE_DEBOUNCE: Duration = Duration::from_millis(120);
+/// Pixels per point for the throwaway render that smart fit scans for ink.
+const SMART_FIT_SCAN_SCALE: f32 = 0.3;
+/// Screen points kept free when fitting page height.
+const FIT_HEIGHT_PADDING: f32 = 20.0;
 
 /// A rendered pixel window of one page at `scale` pixels per PDF point,
 /// single theme. (`x`, `y`, `w`, `h`) are pixels in the full page bitmap.
@@ -412,6 +416,64 @@ impl SpikeApp {
         self.zoom = new_zoom;
     }
 
+    /// One-shot fit of the focused page to the viewport width or height.
+    /// Smart variants measure the page's visible ink (see
+    /// `viewport::content_range`) instead of the full page box.
+    fn fit_zoom_to(&mut self, action: config::Action) {
+        use config::Action::*;
+        let Some(page_idx) = self.keyboard_page() else {
+            self.status = "no document open".to_string();
+            return;
+        };
+        let size = self.viewer.as_ref().unwrap().pages[page_idx].size_pt;
+        let by_width = matches!(action, FitWidth | FitWidthSmart);
+        let page_extent = if by_width { size.width_pt } else { size.height_pt };
+        let mut bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size.width_pt, size.height_pt));
+        if matches!(action, FitWidthSmart | FitHeightSmart) {
+            let range = self
+                .app
+                .active()
+                .and_then(|a| a.document.page(page_idx as u16).ok())
+                .and_then(|p| p.render(SMART_FIT_SCAN_SCALE).ok())
+                .and_then(|img| crate::viewport::content_range(&img, by_width));
+            match range {
+                Some((start, end)) if by_width => {
+                    bounds.min.x = start * page_extent;
+                    bounds.max.x = end * page_extent;
+                }
+                Some((start, end)) => {
+                    bounds.min.y = start * page_extent;
+                    bounds.max.y = end * page_extent;
+                }
+                None => self.status = "no content found, fitting page".to_string(),
+            }
+        }
+        let (available, extent) = if by_width {
+            (self.viewport_rect.width(), bounds.width())
+        } else {
+            (self.viewport_rect.height() - FIT_HEIGHT_PADDING, bounds.height())
+        };
+        let Some(new_zoom) = crate::viewport::fit_zoom(available, extent) else {
+            self.status = "cannot fit page".to_string();
+            return;
+        };
+        // Anchor the fitted box's center to the viewport center on the fit
+        // axis, even when the zoom is unchanged (re-centers without zooming).
+        let Some(rect) = self.page_rects.get(page_idx).copied() else {
+            self.zoom_to(new_zoom, None);
+            return;
+        };
+        let center = self.viewport_rect.center();
+        let mut anchor = ZoomAnchor { page: page_idx, screen_point: center, page_point: (center - rect.min) / self.zoom };
+        if by_width {
+            anchor.page_point.x = bounds.center().x;
+        } else {
+            anchor.page_point.y = bounds.center().y;
+        }
+        self.pending_zoom_anchor = Some(anchor);
+        self.zoom = new_zoom;
+    }
+
     pub fn apply_motion(&mut self, motion: selection::Motion, count: usize) {
         let Some(page_idx) = self.keyboard_page() else {
             self.status = "no document open".to_string();
@@ -589,6 +651,7 @@ impl SpikeApp {
                 };
                 self.zoom_to(new_zoom, ctx.input(|i| i.pointer.hover_pos()));
             }
+            FitWidth | FitWidthSmart | FitHeight | FitHeightSmart => self.fit_zoom_to(action),
             HalfPageUp => self.pending_scroll = Some(egui::vec2(0.0, crate::viewport::HALF_PAGE_SCROLL)),
             HalfPageDown => self.pending_scroll = Some(egui::vec2(0.0, -crate::viewport::HALF_PAGE_SCROLL)),
             ToggleBoxes => self.show_boxes = !self.show_boxes,

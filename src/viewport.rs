@@ -12,8 +12,9 @@ use eframe::egui;
 /// Pixels per PDF point at 100% zoom. 2.0 == 144 DPI (72 * 2).
 pub const SCALE: f32 = 2.0;
 
-/// Matches `keys.js`'s `ZOOM_LEVELS` bounds (0.5 to 3.0).
-pub const MIN_ZOOM_FACTOR: f32 = 0.5;
+/// Zoom bounds (0.1 to 3.0). The floor is low so fit-to-page still works
+/// for tall pages in short windows.
+pub const MIN_ZOOM_FACTOR: f32 = 0.1;
 pub const MAX_ZOOM_FACTOR: f32 = 3.0;
 /// How far above the exact device-pixel-crisp resolution a page is
 /// rendered, so one `ZOOM_LEVELS` step still reuses the current texture
@@ -95,7 +96,7 @@ pub fn page_needs_render(rendered: Option<f32>, pending: Option<f32>, target_sca
 /// Match keys.js's zoom stops. Small steps near 100% avoid the large
 /// 20% jump the native viewer previously made on every keypress.
 pub const ZOOM_LEVELS: &[f32] = &[
-    0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.3, 1.5, 1.7, 1.9, 2.1, 2.4, 2.7, 3.0,
+    0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.3, 1.5, 1.7, 1.9, 2.1, 2.4, 2.7, 3.0,
 ];
 
 pub fn zoom_step(current: f32, direction: i8) -> f32 {
@@ -106,6 +107,110 @@ pub fn zoom_step(current: f32, direction: i8) -> f32 {
         ZOOM_LEVELS.iter().copied().rfind(|&level| level < factor - 0.001).unwrap_or(MIN_ZOOM_FACTOR)
     };
     next * SCALE
+}
+
+/// Zoom at which `extent_pt` PDF points span `available` screen points,
+/// clamped to the same bounds as stepped zoom. A non-positive extent or
+/// space can't be fit and yields `None`.
+pub fn fit_zoom(available: f32, extent_pt: f32) -> Option<f32> {
+    if available <= 0.0 || extent_pt <= 0.0 {
+        return None;
+    }
+    Some((available / extent_pt).clamp(MIN_ZOOM_FACTOR * SCALE, MAX_ZOOM_FACTOR * SCALE))
+}
+
+/// Pixels brighter than this (mean of r, g, b) count as blank paper.
+const INK_BRIGHTNESS_MAX: f32 = 250.0;
+/// Extra pixels kept around detected content, as in Sioyek.
+const CONTENT_BORDER_PX: usize = 10;
+
+/// Where a page's visible content starts and ends along one axis, as
+/// fractions `(start, end)` of the image size, ignoring white margins.
+/// Counts non-white pixels per column (`horizontal`) or row, drops edge
+/// lines holding less than a third of the average count (stray marks,
+/// page numbers), then pads by `CONTENT_BORDER_PX`. A blank image yields
+/// `None`.
+pub fn content_range(img: &image::RgbaImage, horizontal: bool) -> Option<(f32, f32)> {
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let len = if horizontal { w } else { h };
+    if len == 0 {
+        return None;
+    }
+    let mut counts = vec![0u32; len];
+    let mut total = 0u32;
+    for (x, y, p) in img.enumerate_pixels() {
+        let [r, g, b, _] = p.0;
+        if (r as f32 + g as f32 + b as f32) / 3.0 < INK_BRIGHTNESS_MAX {
+            counts[if horizontal { x as usize } else { y as usize }] += 1;
+            total += 1;
+        }
+    }
+    if total == 0 {
+        return None;
+    }
+    let threshold = total as f32 / len as f32 / 3.0;
+    let dense = |i: &usize| counts[*i] as f32 >= threshold;
+    let first = (0..len).find(dense)?;
+    let last = (0..len).rfind(dense)?;
+    let start = first.saturating_sub(CONTENT_BORDER_PX);
+    let end = (last + CONTENT_BORDER_PX).min(len - 1);
+    Some((start as f32 / len as f32, (end + 1) as f32 / len as f32))
+}
+
+#[cfg(test)]
+mod content_range_tests {
+    use super::*;
+
+    fn page(w: u32, h: u32, ink: impl Fn(u32, u32) -> bool) -> image::RgbaImage {
+        image::RgbaImage::from_fn(w, h, |x, y| if ink(x, y) { image::Rgba([0, 0, 0, 255]) } else { image::Rgba([255, 255, 255, 255]) })
+    }
+
+    #[test]
+    fn finds_ink_between_white_margins_plus_border() {
+        let img = page(100, 100, |x, y| (30..70).contains(&x) && (20..80).contains(&y));
+        assert_eq!(content_range(&img, true), Some((0.2, 0.8)));
+        assert_eq!(content_range(&img, false), Some((0.1, 0.9)));
+    }
+
+    #[test]
+    fn border_is_clamped_to_the_image() {
+        let img = page(100, 100, |x, _| x < 95);
+        assert_eq!(content_range(&img, true), Some((0.0, 1.0)));
+    }
+
+    #[test]
+    fn ignores_a_lone_stray_mark() {
+        let img = page(200, 100, |x, y| (60..140).contains(&x) && y < 90 || (x == 5 && y == 5));
+        let (start, end) = content_range(&img, true).unwrap();
+        assert_eq!((start, end), (0.25, 0.75));
+    }
+
+    #[test]
+    fn blank_image_has_no_content() {
+        assert_eq!(content_range(&page(50, 50, |_, _| false), true), None);
+    }
+}
+
+#[cfg(test)]
+mod fit_zoom_tests {
+    use super::*;
+
+    #[test]
+    fn fits_extent_to_available_space() {
+        assert_eq!(fit_zoom(1200.0, 600.0), Some(2.0));
+    }
+
+    #[test]
+    fn clamps_to_zoom_bounds() {
+        assert_eq!(fit_zoom(10.0, 1000.0), Some(MIN_ZOOM_FACTOR * SCALE));
+        assert_eq!(fit_zoom(10_000.0, 100.0), Some(MAX_ZOOM_FACTOR * SCALE));
+    }
+
+    #[test]
+    fn degenerate_input_yields_none() {
+        assert_eq!(fit_zoom(0.0, 600.0), None);
+        assert_eq!(fit_zoom(800.0, 0.0), None);
+    }
 }
 
 /// Points scrolled per `scroll_down`/`scroll_up` action — matches
@@ -207,7 +312,8 @@ mod render_scale_tests {
         assert_eq!(zoom_step(SCALE, 1), SCALE * 1.1);
         assert_eq!(zoom_step(SCALE * 1.1, 1), SCALE * 1.3);
         assert_eq!(zoom_step(SCALE, -1), SCALE * 0.9);
-        assert_eq!(zoom_step(SCALE * 0.5, -1), SCALE * 0.5);
+        assert_eq!(zoom_step(SCALE * 0.5, -1), SCALE * 0.4);
+        assert_eq!(zoom_step(SCALE * 0.1, -1), SCALE * 0.1);
         assert_eq!(zoom_step(SCALE * 3.0, 1), SCALE * 3.0);
     }
 }
