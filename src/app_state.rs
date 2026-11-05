@@ -285,6 +285,10 @@ impl SpikeApp {
         }
     }
 
+    pub fn has_mouse_selection(&self) -> bool {
+        self.anchor_idx.is_some() && self.anchor_idx != self.cursor_idx
+    }
+
     /// `(page index, lines)` the keyboard cursor applies to: the mouse's
     /// `active_page` if one was clicked, else whichever page is
     /// currently nearest the viewport center (see `page_near`) — found
@@ -1467,6 +1471,31 @@ mod cursor_focus_tests {
         app.switch_to_active_tab(&ctx);
         let cursor = app.initial_cursor_for_page(0);
         assert_eq!((cursor.line, cursor.character), (0, 0));
+    }
+
+    #[test]
+    fn a_plain_click_is_not_a_mouse_selection_but_a_drag_is() {
+        let mut app = app_with_lines(vec![line_with_rect(0.0, 10.0)]);
+        app.anchor_idx = Some(3);
+        app.cursor_idx = Some(3);
+        assert!(!app.has_mouse_selection());
+        app.cursor_idx = Some(7);
+        assert!(app.has_mouse_selection());
+        app.anchor_idx = None;
+        assert!(!app.has_mouse_selection());
+    }
+
+    #[test]
+    fn paragraph_object_stops_at_a_paragraph_gap_smaller_than_a_line() {
+        let library = document::test_library();
+        let mut app = SpikeApp::new(library, config::Config::default(), &["assets/test-pdfs/letter.pdf".to_string()]);
+        let ctx = egui::Context::default();
+        app.switch_to_active_tab(&ctx);
+        let doc = document::test_library().open("assets/test-pdfs/letter.pdf").unwrap();
+        app.viewer.as_mut().unwrap().render_page(&doc, 0, 1.0, 2048, &ctx);
+        let lines = &app.viewer.as_ref().unwrap().pages[0].rendered.as_ref().unwrap().lines;
+        let (first, last) = selection::text_object_paragraph(lines, selection::Cursor { line: 7, character: 0 });
+        assert_eq!((first.line, last.line), (6, 9), "letter.pdf's first body paragraph is lines 6..=9");
     }
 
     fn app_on_second_page() -> (SpikeApp, egui::Context) {

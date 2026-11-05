@@ -322,7 +322,7 @@ fn starts_paragraph(lines: &[Line], index: usize) -> bool {
         return true;
     };
     let height = prev.bottom - prev.top;
-    cur.top < prev.top || cur.top - prev.bottom > height * 0.6 || cur.left - prev.left > height * 0.6
+    cur.top < prev.top || cur.top - prev.bottom > height * 0.4 || cur.left - prev.left > height * 0.6
 }
 
 pub fn text_object_paragraph(lines: &[Line], cursor: Cursor) -> (Cursor, Cursor) {
