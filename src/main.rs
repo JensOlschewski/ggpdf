@@ -4,7 +4,6 @@
 //! frame loop) — see those modules for how a document actually gets on
 //! screen.
 
-// Installed release builds are GUI apps: opening a PDF must not spawn a console.
 // Keep a console in debug builds for cargo run diagnostics.
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 
