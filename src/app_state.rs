@@ -474,6 +474,16 @@ impl SpikeApp {
         self.zoom = new_zoom;
     }
 
+    /// Vertically centers the page `delta` pages away from the one at the
+    /// viewport center, clamped to the document. Zoom and x stay put.
+    fn scroll_pages(&mut self, delta: isize) {
+        let Some((current, _)) = self.page_near(self.viewport_rect.center()) else { return };
+        let target = current.saturating_add_signed(delta).min(self.page_rects.len().saturating_sub(1));
+        if let Some(rect) = self.page_rects.get(target) {
+            self.pending_scroll = Some(egui::vec2(0.0, self.viewport_rect.center().y - rect.center().y));
+        }
+    }
+
     pub fn apply_motion(&mut self, motion: selection::Motion, count: usize) {
         let Some(page_idx) = self.keyboard_page() else {
             self.status = "no document open".to_string();
@@ -652,6 +662,8 @@ impl SpikeApp {
                 self.zoom_to(new_zoom, ctx.input(|i| i.pointer.hover_pos()));
             }
             FitWidth | FitWidthSmart | FitHeight | FitHeightSmart => self.fit_zoom_to(action),
+            NextPage => self.scroll_pages(count as isize),
+            PrevPage => self.scroll_pages(-(count as isize)),
             HalfPageUp => self.pending_scroll = Some(egui::vec2(0.0, crate::viewport::HALF_PAGE_SCROLL)),
             HalfPageDown => self.pending_scroll = Some(egui::vec2(0.0, -crate::viewport::HALF_PAGE_SCROLL)),
             ToggleBoxes => self.show_boxes = !self.show_boxes,
