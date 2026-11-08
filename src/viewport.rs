@@ -119,6 +119,13 @@ pub fn fit_zoom(available: f32, extent_pt: f32) -> Option<f32> {
     Some((available / extent_pt).clamp(MIN_ZOOM_FACTOR * SCALE, MAX_ZOOM_FACTOR * SCALE))
 }
 
+/// Pixel size of a page's bitmap at `scale`. A tile can never extend past
+/// it, so tile coverage checks must clamp to it too: a viewport edge
+/// rounded up past this size would otherwise look forever uncovered.
+pub fn bitmap_px(width_pt: f32, height_pt: f32, scale: f32) -> (i32, i32) {
+    ((width_pt * scale) as i32, (height_pt * scale) as i32)
+}
+
 /// Pixels brighter than this (mean of r, g, b) count as blank paper.
 const INK_BRIGHTNESS_MAX: f32 = 250.0;
 /// Extra pixels kept around detected content, as in Sioyek.
@@ -244,6 +251,16 @@ impl ZoomAnchor {
 /// space at the given scale factor (`display_zoom / render_scale`).
 pub fn to_egui_rect(r: text::Rect, scale: f32) -> egui::Rect {
     egui::Rect::from_min_max(egui::pos2(r.left * scale, r.top * scale), egui::pos2(r.right * scale, r.bottom * scale))
+}
+
+#[cfg(test)]
+mod bitmap_px_tests {
+    use super::*;
+
+    #[test]
+    fn truncates_like_the_bitmap_a_tile_is_cut_from() {
+        assert_eq!(bitmap_px(475.9, 680.2, 2.0), (951, 1360));
+    }
 }
 
 #[cfg(test)]

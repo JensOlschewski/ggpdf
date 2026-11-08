@@ -1155,10 +1155,13 @@ impl SpikeApp {
             if self.tile_pending.get(&key) == Some(&self.tile_generation) {
                 continue;
             }
+            let Some(size) = self.viewer.as_ref().and_then(|v| v.pages.get(page)).map(|p| p.size_pt) else { continue };
+            let (page_w, page_h) = crate::viewport::bitmap_px(size.width_pt, size.height_pt, scale);
+            // Clamped to the bitmap the tile is cut from; see `bitmap_px`.
             let to_px = |r: egui::Rect| {
                 let min = (r.min - rect.min) * ppp;
                 let max = (r.max - rect.min) * ppp;
-                (min.x.floor() as i32, min.y.floor() as i32, max.x.ceil() as i32, max.y.ceil() as i32)
+                (min.x.floor() as i32, min.y.floor() as i32, (max.x.ceil() as i32).min(page_w), (max.y.ceil() as i32).min(page_h))
             };
             let (vx0, vy0, vx1, vy1) = to_px(rect.intersect(viewport));
             let covered = self.tiles.get(&key).is_some_and(|t| {

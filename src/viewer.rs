@@ -113,8 +113,7 @@ pub struct PreparedTile {
 pub fn prepare_tile(doc: &Document, index: usize, scale: f32, window: (i32, i32, i32, i32), dark: bool) -> Result<PreparedTile, DocumentError> {
     let page = doc.page(index as u16)?;
     let size = page.size();
-    let full_w = (size.width_pt * scale) as i32;
-    let full_h = (size.height_pt * scale) as i32;
+    let (full_w, full_h) = crate::viewport::bitmap_px(size.width_pt, size.height_pt, scale);
     let x = window.0.clamp(0, full_w.max(1) - 1);
     let y = window.1.clamp(0, full_h.max(1) - 1);
     let width = window.2.min(full_w - x).max(1);
