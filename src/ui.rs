@@ -294,6 +294,9 @@ impl eframe::App for SpikeApp {
                     };
 
                     let gutter_width = self.cfg.appearance.gutter_width as f32;
+                    let show_gutter = matches!(self.dispatcher.mode(), config::Mode::Cursor | config::Mode::Visual | config::Mode::VisualLine);
+                    let cursor_global = self.page_cursor.zip(self.active_page).map(|(c, p)| SpikeApp::lines_before(viewer, p) + c.line);
+                    let mut lines_before = 0;
                     for page_idx in 0..viewer.pages.len() {
                         let page_view = &viewer.pages[page_idx];
                         // Display size from the page's point size directly
@@ -306,7 +309,9 @@ impl eframe::App for SpikeApp {
                         // Centers the page horizontally when it's narrower
                         // than the viewport; 0 (flush left, scrollable)
                         // once zoomed past the window width.
-                        let pad = ((viewport_size.x - size.x) / 2.0).max(0.0);
+                        // The gutter's width is always reserved, so entering
+                        // Cursor mode doesn't shift the page sideways.
+                        let pad = ((viewport_size.x - size.x - gutter_width) / 2.0).max(0.0);
 
                         let Some(page) = &page_view.rendered else {
                             // Not rendered yet (progressive_render hasn't
@@ -316,6 +321,7 @@ impl eframe::App for SpikeApp {
                             // overlay work for it this frame.
                             ui.horizontal(|ui| {
                                 ui.add_space(pad);
+                                ui.add_space(gutter_width);
                                 let (placeholder_rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                                 page_rects.push(placeholder_rect);
                                 ui.painter_at(placeholder_rect).rect_filled(placeholder_rect, 0.0, canvas_color.linear_multiply(0.85));
@@ -329,28 +335,14 @@ impl eframe::App for SpikeApp {
                         // unusually large page — see `RenderedPage`), not
                         // a single scale shared by every page.
                         let display_scale = self.zoom / page.render_scale;
-                        // Gutter line numbers (relative to the cursor's
-                        // line, absolute on the cursor's own line — same
-                        // convention as visual.js's lineNumber()) only on
-                        // the page the keyboard cursor is actually on,
-                        // only while Cursor/Visual/VisualLine is active.
-                        // Simplification versus the original: that app
-                        // computes relative numbers *across* pages too;
-                        // this only does same-page relative numbering,
-                        // to keep the gutter correct without needing a
-                        // cross-page line-count pass every frame.
-                        let show_gutter = matches!(self.dispatcher.mode(), config::Mode::Cursor | config::Mode::Visual | config::Mode::VisualLine)
-                            && self.keyboard_page() == Some(page_idx);
-
-                        // Recompute centering pad including the gutter's
-                        // width when shown, so the page+gutter together
-                        // stay centered rather than just the page.
-                        let pad = ((viewport_size.x - size.x - if show_gutter { gutter_width } else { 0.0 }) / 2.0).max(0.0);
+                        // This page's first line in document-wide line numbering.
+                        let page_first_line = lines_before;
+                        lines_before += page.lines.len();
 
                         let (response, gutter_rect) = ui
                             .horizontal(|ui| {
                                 ui.add_space(pad);
-                                let gutter_rect = show_gutter.then(|| ui.allocate_exact_size(egui::vec2(gutter_width, size.y), egui::Sense::hover()).0);
+                                let (gutter_rect, _) = ui.allocate_exact_size(egui::vec2(gutter_width, size.y), egui::Sense::hover());
                                 let texture = if self.dark { &page.dark_texture } else { &page.texture };
                                 let sense = if self.cfg.input.mouse_selection { egui::Sense::click_and_drag() } else { egui::Sense::hover() };
                                 let response = ui.add(egui::Image::new(texture).fit_to_exact_size(size).sense(sense));
@@ -371,14 +363,13 @@ impl eframe::App for SpikeApp {
                             ui.painter_at(rect).image(tile.texture.id(), tile_rect, uv, egui::Color32::WHITE);
                         }
 
-                        if let Some(gutter_rect) = gutter_rect {
-                            let cursor_line = self.page_cursor.filter(|_| self.active_page == Some(page_idx)).map(|c| c.line);
+                        if show_gutter {
                             let gutter_painter = ui.painter_at(gutter_rect);
                             for (i, line) in page.lines.iter().enumerate() {
                                 let Some(lr) = line.rect() else { continue };
-                                let (label, color) = match cursor_line {
-                                    Some(cl) if cl == i => ((i + 1).to_string(), gutter_current_color),
-                                    Some(cl) => ((i as isize - cl as isize).unsigned_abs().to_string(), gutter_rel_color),
+                                let (label, color) = match cursor_global {
+                                    Some(cg) if page_first_line + i == cg => ((i + 1).to_string(), gutter_current_color),
+                                    Some(cg) => ((page_first_line + i).abs_diff(cg).to_string(), gutter_rel_color),
                                     None => ((i + 1).to_string(), gutter_rel_color),
                                 };
                                 let y = gutter_rect.top() + (lr.top + lr.bottom) * 0.5 * display_scale;
