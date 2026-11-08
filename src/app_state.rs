@@ -376,6 +376,12 @@ impl SpikeApp {
         viewer.pages.get(page_idx)?.rendered.as_ref().map(|r| r.lines.as_slice())
     }
 
+    /// Number of text lines on all pages before `page_idx`. Unrendered pages
+    /// count as zero, matching how `move_vertical_cross_page` skips them.
+    pub fn lines_before(viewer: &Viewer, page_idx: usize) -> usize {
+        viewer.pages[..page_idx].iter().filter_map(|p| p.rendered.as_ref()).map(|r| r.lines.len()).sum()
+    }
+
     pub fn page_chars(viewer: &Viewer, page_idx: usize) -> Option<&[text::PositionedChar]> {
         viewer.pages.get(page_idx)?.rendered.as_ref().map(|r| r.chars.as_slice())
     }
@@ -512,6 +518,26 @@ impl SpikeApp {
         self.active_page = Some(page_idx);
         self.cursor_idx = Some(Self::flat_index(lines, cursor));
         self.update_cursor_status(page_idx, cursor);
+        self.scroll_to_cursor(page_idx, cursor);
+    }
+
+    /// Scrolls just enough to keep the cursor's line inside the viewport,
+    /// leaving a margin of a fifth of its height. Uses last frame's
+    /// `page_rects`, like `scroll_to_match`.
+    fn scroll_to_cursor(&mut self, page_idx: usize, cursor: selection::Cursor) {
+        let Some(&rect) = self.page_rects.get(page_idx) else { return };
+        let Some(page) = self.viewer.as_ref().and_then(|v| v.pages.get(page_idx)).and_then(|p| p.rendered.as_ref()) else { return };
+        let Some(line_rect) = page.lines.get(cursor.line).and_then(|l| l.rect()) else { return };
+        let y = rect.min.y + (line_rect.top + line_rect.bottom) * 0.5 * self.zoom / page.render_scale;
+        let margin = self.viewport_rect.height() * 0.2;
+        let shift = if y < self.viewport_rect.top() + margin {
+            self.viewport_rect.top() + margin - y
+        } else if y > self.viewport_rect.bottom() - margin {
+            self.viewport_rect.bottom() - margin - y
+        } else {
+            return;
+        };
+        self.pending_scroll = Some(egui::vec2(0.0, shift));
     }
 
     /// `j`/`k` (`LineDown`/`LineUp`) crossing page boundaries once the
@@ -1588,6 +1614,19 @@ mod cursor_focus_tests {
         app.active_page = Some(0);
         app.page_cursor = Some(selection::Cursor { line: 999, character: 0 });
         (app, ctx)
+    }
+
+    #[test]
+    fn lines_before_counts_only_rendered_pages_ahead_of_the_given_one() {
+        let (mut app, ctx) = app_on_second_page();
+        let doc = document::test_library().open("assets/test-pdfs/two-column.pdf").unwrap();
+        let viewer = app.viewer.as_mut().unwrap();
+        assert_eq!(SpikeApp::lines_before(viewer, 1), 0, "unrendered page 0 contributes nothing");
+        viewer.render_page(&doc, 0, 1.0, 2048, &ctx);
+        let page0_lines = viewer.pages[0].rendered.as_ref().unwrap().lines.len();
+        assert!(page0_lines > 0);
+        assert_eq!(SpikeApp::lines_before(viewer, 0), 0);
+        assert_eq!(SpikeApp::lines_before(viewer, 1), page0_lines);
     }
 
     #[test]

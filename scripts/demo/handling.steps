@@ -7,13 +7,13 @@
 
 # Zoom
 sleep 1.5
-caption Zooming out ⌃J
+caption Zooming out ctrl+j
 sleep 0.5
 combo ctrl+j
 sleep 0.5
 combo ctrl+j
 sleep 1.5
-caption Zooming in ⌃K
+caption Zooming in ctrl+k
 sleep 0.5
 combo ctrl+k
 sleep 0.5
@@ -23,7 +23,7 @@ combo ctrl+k
 sleep 2.5
 
 # FZF
-caption Fuzz trough predefined directories
+caption Fuzz trough predefined directories with ctrl+f
 sleep 0.5
 combo ctrl+f
 sleep 0.5
@@ -53,6 +53,22 @@ caption Jump to page 3 with  3gg
 sleep 1.0
 type 3gg
 sleep 2.5
+
+# Page Fit to page
+caption Fit to page with s
+sleep 1.0
+type s
+sleep 2.5
+caption Scrool page wise ctrl+p and ctrl+n
+sleep 2.5
+combo ctrl+p
+sleep 0.5
+combo ctrl+p
+sleep 1.5
+combo ctrl+n
+sleep 0.5
+combo ctrl+n
+sleep 1.5
 
 # Dark mode
 caption Dark mode

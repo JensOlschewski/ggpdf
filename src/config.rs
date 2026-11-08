@@ -559,7 +559,7 @@ impl Default for KeyTables {
                 ("Esc", NormalMode),
             ]),
             // `y` is unbound here, so `y i s` is a legal sequence.
-            cursor: table(&[("i", ToggleDark), ("y i s", CopySentence), ("y i p", CopyParagraph)]),
+            cursor: table(&[("c", CursorModeToggle), ("i", ToggleDark), ("y i s", CopySentence), ("y i p", CopyParagraph)]),
             // `y` is bound here, so no `y ...` sequence may exist.
             selection: table(&[
                 ("y", Yank),
