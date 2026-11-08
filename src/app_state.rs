@@ -480,6 +480,21 @@ impl SpikeApp {
         self.zoom = new_zoom;
     }
 
+    /// Zooms out just enough for the focused page and both gutters to fit
+    /// the viewport width. Never zooms in, so a page that already fits
+    /// keeps its zoom.
+    fn fit_gutters_in_view(&mut self) {
+        let Some(page_idx) = self.keyboard_page() else { return };
+        let page_width = self.viewer.as_ref().unwrap().pages[page_idx].size_pt.width_pt;
+        let gutters = 2.0 * self.cfg.appearance.gutter_width as f32;
+        if page_width * self.zoom + gutters <= self.viewport_rect.width() {
+            return;
+        }
+        if let Some(zoom) = crate::viewport::fit_zoom(self.viewport_rect.width() - gutters, page_width) {
+            self.zoom_to(zoom, None);
+        }
+    }
+
     /// Vertically centers the page `delta` pages away from the one at the
     /// viewport center, clamped to the document. Zoom and x stay put.
     fn scroll_pages(&mut self, delta: isize) {
@@ -673,7 +688,7 @@ impl SpikeApp {
                 self.anchor_idx = None;
                 self.cursor_idx = None;
             }
-            Close => self.close_requested = true,
+            Close | Quit => self.close_requested = true,
             Cancel => {
                 self.cursor_idx = None;
                 self.anchor_idx = None;
@@ -729,6 +744,9 @@ impl SpikeApp {
                 // from Visual/VisualLine mode (config.rs binds those to
                 // CursorMode), which should deselect.
                 let from_visual = self.anchor_idx.is_some();
+                if self.cfg.input.cursor_mode_fit_width && !from_visual {
+                    self.fit_gutters_in_view();
+                }
                 // An existing selection stays; the cursor continues from its end.
                 let mouse_cursor = match (self.active_page, self.cursor_idx) {
                     (Some(page_idx), Some(flat)) if from_visual => self

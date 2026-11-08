@@ -67,6 +67,7 @@ max_depth  = 4                                  # how many directory levels to d
 
 [input]
 mouse_selection = true        # dragging selects text and enters visual mode
+cursor_mode_fit_width = true  # entering cursor mode zooms out so both line-number gutters fit
 
 # Key bindings: "<key sequence>" = "<action>".
 # Sequences are space-separated tokens, e.g. "y i s".
@@ -145,6 +146,7 @@ mouse_selection = true        # dragging selects text and enters visual mode
 "N"   = "search_prev"
 "v"   = "visual_mode_toggle"
 "V"   = "visual_line_mode_toggle"
+"q"   = "quit"
 "Esc" = "document_mode"
 
 [keys.cursor]

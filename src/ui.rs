@@ -283,7 +283,7 @@ impl eframe::App for SpikeApp {
                 let mut page_rects = Vec::new();
                 let mut corrected_zoom = false;
 
-                egui::ScrollArea::both().id_salt(("pdf-scroll", self.app.active_index())).animated(false).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
+                egui::ScrollArea::both().id_salt(("pdf-scroll", self.app.active_index())).animated(false).scroll_source(egui::scroll_area::ScrollSource::NONE).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
                     if let Some(delta) = self.pending_scroll.take() {
                         ui.scroll_with_delta(delta);
                     }
@@ -311,7 +311,7 @@ impl eframe::App for SpikeApp {
                         // once zoomed past the window width.
                         // The gutter's width is always reserved, so entering
                         // Cursor mode doesn't shift the page sideways.
-                        let pad = ((viewport_size.x - size.x - gutter_width) / 2.0).max(0.0);
+                        let pad = ((viewport_size.x - size.x - 2.0 * gutter_width) / 2.0).max(0.0);
 
                         let Some(page) = &page_view.rendered else {
                             // Not rendered yet (progressive_render hasn't
@@ -325,6 +325,7 @@ impl eframe::App for SpikeApp {
                                 let (placeholder_rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                                 page_rects.push(placeholder_rect);
                                 ui.painter_at(placeholder_rect).rect_filled(placeholder_rect, 0.0, canvas_color.linear_multiply(0.85));
+                                ui.add_space(gutter_width);
                             });
                             ui.add_space(page_gap);
                             continue;
@@ -339,14 +340,15 @@ impl eframe::App for SpikeApp {
                         let page_first_line = lines_before;
                         lines_before += page.lines.len();
 
-                        let (response, gutter_rect) = ui
+                        let (response, left_gutter, right_gutter) = ui
                             .horizontal(|ui| {
                                 ui.add_space(pad);
-                                let (gutter_rect, _) = ui.allocate_exact_size(egui::vec2(gutter_width, size.y), egui::Sense::hover());
+                                let (left_gutter, _) = ui.allocate_exact_size(egui::vec2(gutter_width, size.y), egui::Sense::hover());
                                 let texture = if self.dark { &page.dark_texture } else { &page.texture };
                                 let sense = if self.cfg.input.mouse_selection { egui::Sense::click_and_drag() } else { egui::Sense::hover() };
                                 let response = ui.add(egui::Image::new(texture).fit_to_exact_size(size).sense(sense));
-                                (response, gutter_rect)
+                                let (right_gutter, _) = ui.allocate_exact_size(egui::vec2(gutter_width, size.y), egui::Sense::hover());
+                                (response, left_gutter, right_gutter)
                             })
                             .inner;
                         let rect = response.rect;
@@ -364,9 +366,18 @@ impl eframe::App for SpikeApp {
                         }
 
                         if show_gutter {
-                            let gutter_painter = ui.painter_at(gutter_rect);
+                            let left_painter = ui.painter_at(left_gutter);
+                            let right_painter = ui.painter_at(right_gutter);
+                            let columns = selection::ColumnLayout::detect(&page.lines);
                             for (i, line) in page.lines.iter().enumerate() {
                                 let Some(lr) = line.rect() else { continue };
+                                // Right-column lines are numbered in the right gutter, beside their own text.
+                                let in_right_column = columns.is_some_and(|layout| layout.column_of(lr) == selection::Column::Right);
+                                let (gutter_painter, gutter_rect, align, x) = if in_right_column {
+                                    (&right_painter, right_gutter, egui::Align2::LEFT_CENTER, right_gutter.left() + 4.0)
+                                } else {
+                                    (&left_painter, left_gutter, egui::Align2::RIGHT_CENTER, left_gutter.right() - 4.0)
+                                };
                                 let (label, color) = match cursor_global {
                                     Some(cg) if page_first_line + i == cg => ((i + 1).to_string(), gutter_current_color),
                                     Some(cg) => ((page_first_line + i).abs_diff(cg).to_string(), gutter_rel_color),
@@ -374,8 +385,8 @@ impl eframe::App for SpikeApp {
                                 };
                                 let y = gutter_rect.top() + (lr.top + lr.bottom) * 0.5 * display_scale;
                                 gutter_painter.text(
-                                    egui::pos2(gutter_rect.right() - 4.0, y),
-                                    egui::Align2::RIGHT_CENTER,
+                                    egui::pos2(x, y),
+                                    align,
                                     label,
                                     egui::FontId::monospace(font_size - 1.0),
                                     color,
@@ -548,6 +559,12 @@ fn highlighted_label(label: &str, matched: &[u32], font_id: &egui::FontId, color
 
 /// Puts the configured font file, if any, ahead of the built-in
 /// monospace font. A missing or unreadable file is reported and ignored.
+/// Zoom is ggpdf's own (`zoom_in`/`zoom_out`); egui's Cmd +/-/0 would
+/// rescale the whole UI instead.
+pub fn disable_native_zoom(ctx: &egui::Context) {
+    ctx.options_mut(|o| o.zoom_with_keyboard = false);
+}
+
 pub fn install_font(ctx: &egui::Context, font_file: &str) {
     if font_file.is_empty() {
         return;

@@ -35,6 +35,8 @@ pub enum Action {
     VisualLineMode,
     NormalMode,
     Close,
+    /// Quits at once, unlike `Close`, which first clears a selection.
+    Quit,
     Cancel,
     CharacterLeft,
     CharacterRight,
@@ -99,6 +101,7 @@ impl Action {
         ("visual_line_mode", Action::VisualLineModeToggle),
         ("normal_mode", Action::NormalMode),
         ("close", Action::Close),
+        ("quit", Action::Quit),
         ("cancel", Action::Cancel),
         ("character_left", Action::CharacterLeft),
         ("character_right", Action::CharacterRight),
@@ -328,11 +331,14 @@ impl Default for Appearance {
 pub struct Input {
     /// Dragging with the mouse selects text and enters visual mode.
     pub mouse_selection: bool,
+    /// Entering Cursor mode zooms out just enough for both line-number
+    /// gutters to fit in the window when they would otherwise be clipped.
+    pub cursor_mode_fit_width: bool,
 }
 
 impl Default for Input {
     fn default() -> Self {
-        Self { mouse_selection: true }
+        Self { mouse_selection: true, cursor_mode_fit_width: true }
     }
 }
 
@@ -556,6 +562,7 @@ impl Default for KeyTables {
                 ("N", SearchPrev),
                 ("v", VisualModeToggle),
                 ("V", VisualLineModeToggle),
+                ("q", Quit),
                 ("Esc", NormalMode),
             ]),
             // `y` is unbound here, so `y i s` is a legal sequence.
@@ -662,7 +669,7 @@ impl Config {
         self.keys.values().any(|mode_keys| {
             mode_keys
                 .iter()
-                .any(|(_, action)| matches!(action, Action::Close | Action::Cancel))
+                .any(|(_, action)| matches!(action, Action::Close | Action::Quit | Action::Cancel))
         })
     }
 }
@@ -898,6 +905,22 @@ mod tests {
         assert!(Config::default().input.mouse_selection);
         let raw: RawConfig = toml::from_str("[input]\nmouse_selection = false").unwrap();
         assert!(!convert(raw).unwrap().input.mouse_selection);
+    }
+
+    #[test]
+    fn q_quits_in_every_mode() {
+        let config = Config::default();
+        for mode in [Mode::Cursor, Mode::Visual, Mode::VisualLine] {
+            assert_eq!(config.keys[&mode]["q"], Action::Quit, "{mode:?}");
+        }
+        assert_eq!(config.keys[&Mode::Normal]["q"], Action::Close);
+    }
+
+    #[test]
+    fn cursor_mode_fit_width_defaults_on_and_can_be_disabled() {
+        assert!(Config::default().input.cursor_mode_fit_width);
+        let raw: RawConfig = toml::from_str("[input]\ncursor_mode_fit_width = false").unwrap();
+        assert!(!convert(raw).unwrap().input.cursor_mode_fit_width);
     }
 
     #[test]
