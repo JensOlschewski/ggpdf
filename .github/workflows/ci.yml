@@ -47,9 +47,9 @@ jobs:
             x86_64) asset=pdfium-mac-x64 ;;
             *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
           esac
-          url=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/bblanchon/pdfium-binaries/releases/latest \
+          url=$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 15 -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/bblanchon/pdfium-binaries/releases/latest \
             | grep -oE "https://[^\"]+${asset}\.tgz")
-          curl -fsSL "$url" -o pdfium.tgz
+          curl -fsSL --retry 5 --retry-all-errors --connect-timeout 15 "$url" -o pdfium.tgz
           mkdir -p pdfium
           tar -xzf pdfium.tgz -O lib/libpdfium.dylib > pdfium/libpdfium.dylib
           chmod +x pdfium/libpdfium.dylib
@@ -59,9 +59,9 @@ jobs:
         shell: bash
         run: |
           set -eu
-          url=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/bblanchon/pdfium-binaries/releases/latest \
+          url=$(curl -fsSL --retry 5 --retry-all-errors --connect-timeout 15 -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/bblanchon/pdfium-binaries/releases/latest \
             | grep -oE "https://[^\"]+pdfium-win-x64\.tgz")
-          curl -fsSL "$url" -o pdfium.tgz
+          curl -fsSL --retry 5 --retry-all-errors --connect-timeout 15 "$url" -o pdfium.tgz
           mkdir -p pdfium
           tar -xzf pdfium.tgz -O bin/pdfium.dll > pdfium/pdfium.dll
 
