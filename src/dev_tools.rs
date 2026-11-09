@@ -101,6 +101,33 @@ pub fn dump_fixtures(library: &'static PdfLibrary) -> Result<(), document::Docum
     Ok(())
 }
 
+/// Times the steps behind one scroll-time sharp tile: the PDFium window
+/// render (worker thread), the dark filter (worker thread) and the
+/// `ColorImage` conversion (UI thread; the GPU upload comes on top). The
+/// window mimics a ~1200x900pt viewport at 2x pixels-per-point: page-wide,
+/// two viewport heights tall.
+fn profile_tile(doc: &document::Document, index: usize) {
+    const TILE_SCALE: f32 = 2.5;
+    const WINDOW: (i32, i32, i32, i32) = (0, 0, 3000, 3600);
+
+    let render_start = std::time::Instant::now();
+    let Ok(light) = viewer::prepare_tile(doc, index, TILE_SCALE, WINDOW, false) else { return };
+    let render_elapsed = render_start.elapsed();
+
+    let dark_start = std::time::Instant::now();
+    let _ = viewer::prepare_tile(doc, index, TILE_SCALE, WINDOW, true);
+    let dark_elapsed = dark_start.elapsed() - render_elapsed.min(dark_start.elapsed());
+
+    let convert_start = std::time::Instant::now();
+    let (w, h) = (light.image.width() as usize, light.image.height() as usize);
+    let _ = eframe::egui::ColorImage::from_rgba_unmultiplied([w, h], light.image.as_raw());
+    let convert_elapsed = convert_start.elapsed();
+
+    println!(
+        "  tile {w}x{h} px: render {render_elapsed:.1?} | dark filter ~{dark_elapsed:.1?} | ColorImage convert {convert_elapsed:.1?} (UI thread)"
+    );
+}
+
 /// Headless diagnostic for a live "it's slow" report on a specific file,
 /// with no display needed: opens `path` and times exactly the steps
 /// `SpikeApp::progressive_render`/`viewer::prepare_page` do per page
@@ -173,6 +200,8 @@ pub fn profile_document(library: &'static PdfLibrary, path: &str) -> Result<(), 
         let lines_start = std::time::Instant::now();
         let lines = selection::group_into_lines(&positioned);
         let lines_elapsed = lines_start.elapsed();
+
+        profile_tile(&doc, index as usize);
 
         println!(
             "page {}/{page_count}: {:.0}x{:.0}pt -> {}x{} px | render {:.1?} | raw_chars {:.1?} ({} chars) | position_chars {:.1?} | group_into_lines {:.1?} ({} lines)",

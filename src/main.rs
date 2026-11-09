@@ -91,6 +91,7 @@ fn main() -> eframe::Result<()> {
             Box::new(move |cc| {
                 *repaint.lock().unwrap() = Some(cc.egui_ctx.clone());
                 ui::install_font(&cc.egui_ctx, &cfg.appearance.font_file);
+                ui::disable_native_zoom(&cc.egui_ctx);
                 // Finder can send the cold-launch event before eframe creates
                 // its UI. Consume it now, before deciding on a sample tab.
                 let initial_events: Vec<_> = receiver.try_iter().flatten().collect();
@@ -112,6 +113,7 @@ fn main() -> eframe::Result<()> {
         native_options(),
         Box::new(move |cc| {
             ui::install_font(&cc.egui_ctx, &cfg.appearance.font_file);
+            ui::disable_native_zoom(&cc.egui_ctx);
             Ok(Box::new(SpikeApp::new(library, cfg, &file_args)))
         }),
     )

@@ -480,6 +480,21 @@ impl SpikeApp {
         self.zoom = new_zoom;
     }
 
+    /// Zooms out just enough for the focused page and both gutters to fit
+    /// the viewport width. Never zooms in, so a page that already fits
+    /// keeps its zoom.
+    fn fit_gutters_in_view(&mut self) {
+        let Some(page_idx) = self.keyboard_page() else { return };
+        let page_width = self.viewer.as_ref().unwrap().pages[page_idx].size_pt.width_pt;
+        let gutters = 2.0 * self.cfg.appearance.gutter_width as f32;
+        if page_width * self.zoom + gutters <= self.viewport_rect.width() {
+            return;
+        }
+        if let Some(zoom) = crate::viewport::fit_zoom(self.viewport_rect.width() - gutters, page_width) {
+            self.zoom_to(zoom, None);
+        }
+    }
+
     /// Vertically centers the page `delta` pages away from the one at the
     /// viewport center, clamped to the document. Zoom and x stay put.
     fn scroll_pages(&mut self, delta: isize) {
@@ -673,7 +688,7 @@ impl SpikeApp {
                 self.anchor_idx = None;
                 self.cursor_idx = None;
             }
-            Close => self.close_requested = true,
+            Close | Quit => self.close_requested = true,
             Cancel => {
                 self.cursor_idx = None;
                 self.anchor_idx = None;
@@ -729,6 +744,9 @@ impl SpikeApp {
                 // from Visual/VisualLine mode (config.rs binds those to
                 // CursorMode), which should deselect.
                 let from_visual = self.anchor_idx.is_some();
+                if self.cfg.input.cursor_mode_fit_width && !from_visual {
+                    self.fit_gutters_in_view();
+                }
                 // An existing selection stays; the cursor continues from its end.
                 let mouse_cursor = match (self.active_page, self.cursor_idx) {
                     (Some(page_idx), Some(flat)) if from_visual => self
@@ -1137,10 +1155,13 @@ impl SpikeApp {
             if self.tile_pending.get(&key) == Some(&self.tile_generation) {
                 continue;
             }
+            let Some(size) = self.viewer.as_ref().and_then(|v| v.pages.get(page)).map(|p| p.size_pt) else { continue };
+            let (page_w, page_h) = crate::viewport::bitmap_px(size.width_pt, size.height_pt, scale);
+            // Clamped to the bitmap the tile is cut from; see `bitmap_px`.
             let to_px = |r: egui::Rect| {
                 let min = (r.min - rect.min) * ppp;
                 let max = (r.max - rect.min) * ppp;
-                (min.x.floor() as i32, min.y.floor() as i32, max.x.ceil() as i32, max.y.ceil() as i32)
+                (min.x.floor() as i32, min.y.floor() as i32, (max.x.ceil() as i32).min(page_w), (max.y.ceil() as i32).min(page_h))
             };
             let (vx0, vy0, vx1, vy1) = to_px(rect.intersect(viewport));
             let covered = self.tiles.get(&key).is_some_and(|t| {

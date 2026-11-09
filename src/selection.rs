@@ -125,6 +125,73 @@ pub fn selection_span_rects(lines: &[Line], start_flat: usize, end_flat: usize) 
     rects
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Column {
+    Left,
+    Right,
+    /// Crosses the gutter between the columns (titles, wide figures).
+    Full,
+}
+
+/// Geometry of a two-column page, derived from its lines. Relies on
+/// PDFium yielding the left column before the right one.
+#[derive(Debug, Clone, Copy)]
+pub struct ColumnLayout {
+    /// X of the gutter between the columns.
+    gap: f32,
+    left_bottom: f32,
+    right_top: f32,
+    right_left: f32,
+}
+
+impl ColumnLayout {
+    /// Treats the midpoint of the page's text as the gutter. The page counts
+    /// as two-column when at least three lines sit wholly on each side and
+    /// together they make up at least half of all lines.
+    pub fn detect(lines: &[Line]) -> Option<Self> {
+        let rects: Vec<Rect> = lines.iter().filter_map(Line::rect).collect();
+        let page_left = rects.iter().map(|r| r.left).min_by(f32::total_cmp)?;
+        let page_right = rects.iter().map(|r| r.right).max_by(f32::total_cmp)?;
+        let gap = (page_left + page_right) / 2.0;
+
+        let left: Vec<&Rect> = rects.iter().filter(|r| r.right <= gap).collect();
+        let right: Vec<&Rect> = rects.iter().filter(|r| r.left >= gap).collect();
+        if left.len() < 3 || right.len() < 3 || (left.len() + right.len()) * 2 < rects.len() {
+            return None;
+        }
+        Some(Self {
+            gap,
+            left_bottom: left.iter().map(|r| r.bottom).fold(f32::MIN, f32::max),
+            right_top: right.iter().map(|r| r.top).fold(f32::MAX, f32::min),
+            right_left: right.iter().map(|r| r.left).fold(f32::MAX, f32::min),
+        })
+    }
+
+    /// The column a point at `x` falls in (never `Full`).
+    pub fn column_at(&self, x: f32) -> Column {
+        if x < self.gap { Column::Left } else { Column::Right }
+    }
+
+    pub fn column_of(&self, rect: Rect) -> Column {
+        if rect.right <= self.gap {
+            Column::Left
+        } else if rect.left >= self.gap {
+            Column::Right
+        } else {
+            Column::Full
+        }
+    }
+
+    /// Whether `cur`, the first line of the right column's text, continues
+    /// the paragraph that `prev` ends at the bottom of the left column:
+    /// `prev` reaches the column bottom, `cur` sits at the column top and
+    /// is not indented.
+    fn continues_across(&self, prev: Rect, cur: Rect) -> bool {
+        let height = prev.bottom - prev.top;
+        prev.bottom >= self.left_bottom - height * 1.5 && cur.top <= self.right_top + height * 1.5 && cur.left - self.right_left <= height * 0.6
+    }
+}
+
 /// Every `(start, end)` flat-index match of `query` in `chars` (`end`
 /// inclusive) — directly comparable with the rest of the codebase's
 /// existing flat per-page character indices (`cursor_idx`, `flat_index`,
@@ -295,12 +362,22 @@ fn word_motion(lines: &[Line], cursor: Cursor, motion: Motion, count: usize) -> 
 /// The character nearest to the point `(x, y)` (page render space): the
 /// closest line by vertical distance, then the closest character on it by
 /// horizontal distance.
+///
+/// On a two-column page only lines in the clicked column (and full-width
+/// lines) compete, so a click never lands in the neighbouring column.
 pub fn nearest_cursor(lines: &[Line], x: f32, y: f32) -> Option<Cursor> {
     let gap = |lo: f32, hi: f32, v: f32| (v - v.clamp(lo, hi)).abs();
+    let columns = ColumnLayout::detect(lines);
+    let clicked = columns.as_ref().map(|layout| layout.column_at(x));
     let (line, _) = lines
         .iter()
         .enumerate()
-        .filter_map(|(i, l)| l.rect().map(|r| (i, gap(r.top, r.bottom, y))))
+        .filter_map(|(i, l)| l.rect().map(|r| (i, r)))
+        .filter(|&(_, r)| match (&columns, clicked) {
+            (Some(layout), Some(column)) => matches!(layout.column_of(r), Column::Full) || layout.column_of(r) == column,
+            _ => true,
+        })
+        .map(|(i, r)| (i, gap(r.top, r.bottom, y)))
         .min_by(|a, b| a.1.total_cmp(&b.1))?;
     let (character, _) = lines[line]
         .chars
@@ -314,24 +391,31 @@ pub fn nearest_cursor(lines: &[Line], x: f32, y: f32) -> Option<Cursor> {
 /// `is`/`ip` in `visual.js`'s terms. Returns the inclusive `(start, end)`
 /// bounds of the text object containing `cursor`, or `None` if the page
 /// has no text to select (only possible for `sentence`).
-fn starts_paragraph(lines: &[Line], index: usize) -> bool {
+fn starts_paragraph(lines: &[Line], index: usize, columns: Option<&ColumnLayout>) -> bool {
     if index == 0 {
         return true;
     }
     let (Some(prev), Some(cur)) = (lines[index - 1].rect(), lines[index].rect()) else {
         return true;
     };
+    if let Some(layout) = columns
+        && layout.column_of(prev) == Column::Left
+        && layout.column_of(cur) == Column::Right
+    {
+        return !layout.continues_across(prev, cur);
+    }
     let height = prev.bottom - prev.top;
     cur.top < prev.top || cur.top - prev.bottom > height * 0.4 || cur.left - prev.left > height * 0.6
 }
 
 pub fn text_object_paragraph(lines: &[Line], cursor: Cursor) -> (Cursor, Cursor) {
+    let columns = ColumnLayout::detect(lines);
     let mut first = cursor.line;
     let mut last = cursor.line;
-    while first > 0 && !starts_paragraph(lines, first) {
+    while first > 0 && !starts_paragraph(lines, first, columns.as_ref()) {
         first -= 1;
     }
-    while last + 1 < lines.len() && !starts_paragraph(lines, last + 1) {
+    while last + 1 < lines.len() && !starts_paragraph(lines, last + 1, columns.as_ref()) {
         last += 1;
     }
     let last_char = lines[last].chars.len().saturating_sub(1);
@@ -380,12 +464,13 @@ pub fn text_object_sentence(lines: &[Line], cursor: Cursor) -> Option<(Cursor, C
     let mut entries: Vec<SentenceEntry> = Vec::new();
     let mut full_text = String::new();
     let mut cursor_offset = 0usize;
+    let columns = ColumnLayout::detect(lines);
 
     for (li, line) in lines.iter().enumerate() {
         if li != 0 {
             // Unicode's paragraph separator forces a sentence boundary;
             // ordinary wrapped visual lines must continue as prose.
-            full_text.push(if starts_paragraph(lines, li) { '\u{2029}' } else { ' ' });
+            full_text.push(if starts_paragraph(lines, li, columns.as_ref()) { '\u{2029}' } else { ' ' });
             text_len += 1;
         }
         for (ci, c) in line.chars.iter().enumerate() {
@@ -527,6 +612,48 @@ mod tests {
         let lines = lines_from(&["I met Dr.", "A new paragraph."], &[1]);
         let (start, end) = text_object_sentence(&lines, Cursor { line: 1, character: 1 }).unwrap();
         assert_eq!(selected_text(&lines, start, end), "A new paragraph.");
+    }
+
+    /// Two columns of `rows` lines each (left at x 0..9, right at x 20..29),
+    /// reading order left column first, rows 12px apart.
+    fn two_column_lines(rows: usize) -> Vec<Line> {
+        let line_at = |left: f32, row: usize| Line {
+            chars: (0..10).map(|i| char_at('a', left + i as f32, (row * 12) as f32, 1.0, 10.0)).collect(),
+        };
+        let column = |left: f32| (0..rows).map(move |row| line_at(left, row));
+        column(0.0).chain(column(20.0)).collect()
+    }
+
+    #[test]
+    fn column_layout_needs_text_on_both_sides() {
+        assert!(ColumnLayout::detect(&two_column_lines(5)).is_some());
+        assert!(ColumnLayout::detect(&lines_from(&["abcd", "efgh", "ijkl", "mnop"], &[])).is_none());
+    }
+
+    #[test]
+    fn paragraph_text_object_joins_across_the_column_break() {
+        let lines = two_column_lines(5);
+        let (start, end) = text_object_paragraph(&lines, Cursor { line: 2, character: 0 });
+        assert_eq!((start.line, end.line), (0, 9));
+    }
+
+    #[test]
+    fn paragraph_text_object_stops_at_an_indented_column_top() {
+        let mut lines = two_column_lines(5);
+        for c in &mut lines[5].chars {
+            c.rect.left += 10.0;
+            c.rect.right += 10.0;
+        }
+        let (start, end) = text_object_paragraph(&lines, Cursor { line: 2, character: 0 });
+        assert_eq!((start.line, end.line), (0, 4));
+    }
+
+    #[test]
+    fn nearest_cursor_stays_in_the_clicked_column() {
+        let lines = two_column_lines(5);
+        // Right of the gutter, level with row 1: must not pick the left column's row 1.
+        assert_eq!(nearest_cursor(&lines, 25.0, 13.0).unwrap().line, 6);
+        assert_eq!(nearest_cursor(&lines, 3.0, 13.0).unwrap().line, 1);
     }
 
     #[test]
